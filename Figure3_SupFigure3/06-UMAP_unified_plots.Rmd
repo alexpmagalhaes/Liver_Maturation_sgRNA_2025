@@ -1,0 +1,632 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(Seurat)
+library(cowplot)
+library(hdf5r)
+library(kableExtra)
+library(patchwork)
+library(sva)
+library(tidyverse)
+library(DoubletFinder)
+library(gprofiler2)
+library(future)
+library(pheatmap)
+library(clustree)
+library(loomR)
+library(SeuratWrappers)
+library(parallel)
+library(viridis)
+library(ReductionWrappers)
+library(UCell)
+library(PrettyCols)
+library(scales)
+library(SCpubr)
+library(rlist)
+# work in parallel
+options(mc.cores = 8)
+plan("multicore", workers = 8)
+options(future.globals.maxSize = 28 * 1024 ^ 3)
+set.seed(12345)
+options = guides(color = guide_legend(override.aes = list(size=3), ncol=2))
+
+```
+```{r}
+#This works!
+# load("WT_Pertub_20240827.RData")
+
+#This one has the full set
+# load("WT_ref_WGCNA_20230622.RData")
+```
+```{r}
+df2 <- as.data.table(PerburbSet@meta.data)
+sel <- c("orig.ident", "nCount_RNA", "nFeature_RNA", "nCount_Crispr", "nFeature_Crispr", "nFeature_sgRNA", "nCount_sgRNA")
+df2 <- df2[, sel, with = FALSE]
+```
+
+```{r}
+fontsize <- 10
+linesize <- 0.35
+
+gp.ls <- df2[, 2:7] %>% imap( ~ {
+  
+   # define lable fun
+  give.n <- function(x) {
+    return(c(y = median(x) + max(x) / 10, label = round(median(x), 2)))
+  }
+  
+  # assign colors
+  col.ls <-
+    setNames(
+      c('lightpink2', 'lightblue2', 'lightgreen', 'coral1', 'yellow' , 'white'),
+      c("nCount_RNA", "nFeature_RNA", "nCount_Crispr", "nFeature_Crispr", "nFeature_sgRNA", "nCount_sgRNA")
+    )
+  
+  ggplot(data = df2, aes(x = orig.ident, y = .x)) +
+    geom_violin(trim = FALSE, fill = col.ls[.y]) +
+    ggtitle(label = .y) + ylab(label = .y) +
+    theme_bw() +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      strip.background = element_blank(),
+      panel.border = element_blank()
+    ) +
+    theme(
+      axis.text = element_text(size = fontsize),
+      axis.line = element_line(colour = "black", size = linesize),
+      axis.ticks = element_line(size = linesize),
+      axis.title.x = element_blank(),
+      axis.ticks.length = unit(.05, "cm"),
+      plot.title = element_text(size = fontsize + 2, hjust = 0.5),
+      legend.position = 'none'
+    ) +
+    stat_summary(fun = median, geom = "point", col = "black") +  # Add points to plot
+    stat_summary(fun.data = give.n,
+                 geom = "text",
+                 col = "black")
+})
+
+grid.arrange(gp.ls[[1]], gp.ls[[2]], gp.ls[[3]], gp.ls[[4]], gp.ls[[5]], gp.ls[[6]], ncol = 3)
+```
+
+
+```{r}
+library(gridExtra)
+library(data.table)
+
+WT_ref$GenesPerUMI <- log10(combined$nFeature_RNA) / log10(combined$nCount_RNA)
+
+df <- as.data.table(WT_ref@meta.data)
+sel <- c("orig.ident", "nCount_RNA", "nFeature_RNA")
+df <- df[, sel, with = FALSE]
+
+
+fontsize <- 10
+linesize <- 0.35
+
+gp.ls <- df[, 2:3] %>% imap( ~ {
+  
+   # define lable fun
+  give.n <- function(x) {
+    return(c(y = median(x) + max(x) / 10, label = round(median(x), 2)))
+  }
+  
+  # assign colors
+  col.ls <-
+    setNames(
+      c('lightpink2', 'lightblue2'),
+      c("nCount_RNA", "nFeature_RNA")
+    )
+  
+  ggplot(data = df, aes(x = orig.ident, y = .x)) +
+    geom_violin(trim = FALSE, fill = col.ls[.y]) +
+    ggtitle(label = .y) + ylab(label = .y) +
+    theme_bw() +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      strip.background = element_blank(),
+      panel.border = element_blank()
+    ) +
+    theme(
+      axis.text = element_text(size = fontsize),
+      axis.line = element_line(colour = "black", size = linesize),
+      axis.ticks = element_line(size = linesize),
+      axis.title.x = element_blank(),
+      axis.ticks.length = unit(.05, "cm"),
+      plot.title = element_text(size = fontsize + 2, hjust = 0.5),
+      legend.position = 'none'
+    ) +
+    stat_summary(fun = median, geom = "point", col = "black") +  # Add points to plot
+    stat_summary(fun.data = give.n,
+                 geom = "text",
+                 col = "black")
+})
+
+grid.arrange(gp.ls[[1]], gp.ls[[2]], ncol = 2)
+```
+
+```{r}
+#WT.ref_Full <- SetIdent(WT.ref_Full, value = "orig.ident")
+
+plot_grid(ncol = 3, nrow = 1,  align = "hv",
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Dlk1", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("P1_liver" ,"P10_liver","Adult_liver"))]) & theme(aspect.ratio = 1),
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Pdgfra", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("P1_liver" ,"P10_liver","Adult_liver"))]) & theme(aspect.ratio = 1),
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Alb", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("P1_liver" ,"P10_liver","Adult_liver"))]) & theme(aspect.ratio = 1)
+)
+ggsave("Dlk1_Pdgfra_Alb_WF_full_E15.pdf")
+
+plot_grid(ncol = 3, nrow = 1,  align = "hv",
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Dlk1", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("P10_liver" ,"E15.5","Adult_liver"))]) & theme(aspect.ratio = 1),
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Ceacam1", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("P10_liver" ,"E15.5","Adult_liver"))]) & theme(aspect.ratio = 1),
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Alb", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("P10_liver" ,"E15.5","Adult_liver"))]) & theme(aspect.ratio = 1)
+)
+ggsave("Dlk1_Ceacam1_Alb_WF_full_P1.pdf")
+
+plot_grid(ncol = 3, nrow = 1,  align = "hv",
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Ceacam1", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("E15.5" ,"P1_liver","Adult_liver"))]) & theme(aspect.ratio = 1),
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Adgre1", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("E15.5" ,"P1_liver","Adult_liver"))]) & theme(aspect.ratio = 1),
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Alb", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("E15.5" ,"P1_liver","Adult_liver"))]) & theme(aspect.ratio = 1)
+)
+ggsave("Ceacam1_Adgre1_Alb_WF_full_P10.pdf")
+
+plot_grid(ncol = 3, nrow = 1,  align = "hv",
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Ceacam1", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("P1_liver" ,"P10_liver","E15.5"))]) & theme(aspect.ratio = 1),
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Adgre1", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("P1_liver" ,"P10_liver","E15.5"))]) & theme(aspect.ratio = 1),
+          SCpubr::do_FeaturePlot(sample =  WT.ref_Full, reduction = "umap", features = "Alb", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T,
+                                 idents.highlight = levels(WT.ref_Full)[!(levels(WT.ref_Full) %in% c("P1_liver" ,"P10_liver","E15.5"))]) & theme(aspect.ratio = 1)
+)
+ggsave("Ceacam1_Adgre1_Alb_WF_full_Adult.pdf")
+```
+```{r}
+SCpubr::do_BarPlot(WT.ref_Full, 
+                         group.by = "RNA_snn_res.0.25" ,
+                         split.by = "orig.ident",
+                         position = "fill",
+                         flip = FALSE)
+```
+```{r}
+WT.ref_Full@meta.data <- WT.ref_Full@meta.data %>% mutate(hepatocyte_ident = ifelse(Cells(WT.ref_Full) %in% list.append(Cells(WT_ref), Cells(subset(x = WT.ref_Full, subset = RNA_snn_res.0.25 == "5")), Cells(subset(x = WT.ref_Full, subset = RNA_snn_res.0.25 == "2"))) , "Hepatocyte", "Other"))
+```
+```{r}
+WT_ref <- SetIdent(WT_ref, value = "orig.ident")
+```
+```{r fig.height=6, fig.width=6}
+SCpubr::do_DimPlot(sample = WT.ref_Full,
+                   plot.axes = TRUE, reduction = "umap",
+                   shuffle = TRUE, group.by =  "hepatocyte_ident",
+                   font.size = 6, legend.position = "none",
+                   raster = F, border.size = 2, na.value = "white",
+                   colors.use = c("Hepatocyte" = "#1375BC", "Other" = "#D1D3D4"),
+                   label = F, repel = T, pt.size = 0.5, plot_cell_borders = T,
+                   split.by = 'orig.ident',# raster.dpi = 300,
+                   split.by.combined = T) & theme(aspect.ratio = 1)
+ggsave("WT.ref_Full_hepatocyte_ident_orig.ident.pdf")
+```
+```{r fig.height=6, fig.width=6}
+SCpubr::do_FeaturePlot(sample = WT_ref, reduction = "umap", dims = 1:2, features = "Cyp2e1", ncol = 3, raster = F,
+                       legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", split.by = 'orig.ident',
+                        # idents.highlight = levels(WT_ref)[!(levels(WT_ref) %in% c("E15.5","Adult_liver"))],
+                       ) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cyp2e1_WT_ref_umap.pdf")
+
+
+SCpubr::do_FeaturePlot(sample = WT_ref, reduction = "umap", dims = 1:2, features = "Cyp2f2", ncol = 3, raster = F,
+                       legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", split.by = 'orig.ident',
+                       # idents.highlight = levels(WT_ref)[!(levels(WT_ref) %in% c("E15.5","Adult_liver"))],
+                       ) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cyp2f2_WT_ref_umap.pdf")
+
+SCpubr::do_FeaturePlot(sample = WT_ref, reduction = "umap", dims = 1:2, features = "Cyb5a", ncol = 3, raster = F,
+                       legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", split.by = 'orig.ident',
+                       # idents.highlight = levels(WT_ref)[!(levels(WT_ref) %in% c("E15.5","Adult_liver"))],
+                       ) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cyb5a_WT_ref_umap.pdf")
+
+SCpubr::do_FeaturePlot(sample = WT_ref, reduction = "umap", dims = 1:2, features = "Cyp2a5", ncol = 3, raster = F,
+                       legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", split.by = 'orig.ident',
+                       # idents.highlight = levels(WT_ref)[!(levels(WT_ref) %in% c("E15.5","Adult_liver"))],
+                       ) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cyp2a5_WT_ref_umap.pdf")
+
+SCpubr::do_FeaturePlot(sample = WT_ref, reduction = "umap", dims = 1:2, features = "Aldob", ncol = 3, raster = F,
+                       legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", split.by = 'orig.ident',
+                       # idents.highlight = levels(WT_ref)[!(levels(WT_ref) %in% c("E15.5","Adult_liver"))],
+                       )& theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Aldob_WT_ref_umap.pdf")
+```
+
+
+```{r}
+SCpubr::do_DimPlot(sample = WT.ref_Full, plot.axes = TRUE, reduction = "umap", shuffle = TRUE, group.by =  "RNA_snn_res.0.25", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T) & theme(aspect.ratio = 1)
+```
+```{r fig.height=6, fig.width=6}
+SCpubr::do_FeaturePlot(sample = WT_ref, reduction = "umap", dims = 1:2, features = "Glul", ncol = 3, raster = F,
+                       legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", split.by = 'orig.ident',
+                       # idents.highlight = levels(WT_ref)[!(levels(WT_ref) %in% c("E15.5","Adult_liver"))],
+                       ) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+# ggsave("Cyp2f2_WT_ref_umap.pdf")
+```
+
+
+```{r fig.height=6, fig.width=6}
+SCpubr::do_FeaturePlot(sample = WT_ref, reduction = "umap", dims = 1:2, features = "Cyp2f2", ncol = 3, raster = F,
+                       legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", split.by = 'orig.ident',
+                        # idents.highlight = levels(WT_ref)[!(levels(WT_ref) %in% c("E15.5","Adult_liver"))],
+                       ) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cyp2f2_WT_ref_umap.pdf")
+
+SCpubr::do_FeaturePlot(sample = WT_ref, reduction = "umap", dims = 1:2, features = "Glul", ncol = 3, raster = F,
+                       legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", split.by = 'orig.ident',
+                       # idents.highlight = levels(WT_ref)[!(levels(WT_ref) %in% c("E15.5","Adult_liver"))],
+                       ) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Glul_WT_ref_umap.pdf")
+
+SCpubr::do_FeaturePlot(sample = WT_ref, reduction = "umap", dims = 1:2, features = "Oat", ncol = 3, raster = F,
+                       legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", split.by = 'orig.ident',
+                        # idents.highlight = levels(WT_ref)[!(levels(WT_ref) %in% c("E15.5","Adult_liver"))],
+                       ) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Oat_WT_ref_umap.pdf")
+
+SCpubr::do_FeaturePlot(sample = WT_ref, reduction = "umap", dims = 1:2, features = "Cps1", ncol = 3, raster = F,
+                       legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", split.by = 'orig.ident',
+                       # idents.highlight = levels(WT_ref)[!(levels(WT_ref) %in% c("E15.5","Adult_liver"))],
+                       ) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cps1_WT_ref_umap.pdf")
+```
+
+
+```{r}
+SCpubr::do_DimPlot(sample = WT.ref_Full, plot.axes = TRUE, reduction = "umap", shuffle = TRUE, group.by =  "hepatocyte_ident", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T) & theme(aspect.ratio = 1)
+```
+```{r}
+SCpubr::do_BarPlot(WT.ref_Full, 
+                         group.by = "hepatocyte_ident" ,
+                         split.by = "orig.ident",
+                         position = "fill",
+                         flip = FALSE) & theme(aspect.ratio = 2)
+ggsave("hepatocyte_ident_bysample_WF_full.pdf")
+```
+```{r}
+SCpubr::do_DimPlot(sample = WT_AD, plot.axes = TRUE, reduction = "SCT_umap", shuffle = TRUE, font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T) & theme(aspect.ratio = 1)
+```
+```{r fig.height=6, fig.width=6}
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Hamp", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("do_FeaturePlot_Hamp_SCT_umap_Adult.pdf")
+
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "AY036118", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("do_FeaturePlot_AY036118_SCT_umap_Adult.pdf")
+```
+```{r fig.height=6, fig.width=6}
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Cyp2f2", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", max.cutoff = 4) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("do_FeaturePlot_Cyp2f2_SCT_umap_Adult.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Glul", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", max.cutoff = 4) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("do_FeaturePlot_Glul_SCT_umap_Adult.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Hamp", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", max.cutoff = 5) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("do_FeaturePlot_Hamp_SCT_umap_Adult.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "AY036118", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A", max.cutoff = 5) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("do_FeaturePlot_AY036118_SCT_umap_Adult.pdf")
+```
+```{r fig.height=6, fig.width=6}
+
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Cyp2f2", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cyp2f2_Adult_SCTumap_SCT.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Cps1", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cps1_Adult_SCTumap_SCT.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Scd1", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Scd1_Adult_SCTumap_SCT.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Cdh1", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cdh1_Adult_SCTumap_SCT.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Alb", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Alb_Adult_SCTumap_SCT.pdf")
+```
+```{r fig.height=6, fig.width=6}
+
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Oat", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Oat_Adult_SCTumap_SCT.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Glul", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Glul_Adult_SCTumap_SCT.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Cyp2e1", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cyp2e1_Adult_SCTumap_SCT.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Cyp2c29", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cyp2c29_Adult_SCTumap_SCT.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Cyp2c50", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cyp2c50_Adult_SCTumap_SCT.pdf")
+```
+
+```{r fig.height=6, fig.width=6}
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Hamp", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Hamp_Adult_SCTumap_SCT.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Eif1", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Eif1_Adult_SCTumap_SCT.pdf")
+
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "Cmss1", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("Cmss1_Adult_SCTumap_SCT.pdf")
+SCpubr::do_FeaturePlot(sample = WT_AD, reduction = "SCT_umap", dims = 1:2, features = "AY036118", ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis.palette = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("AY036118_Adult_SCTumap_SCT.pdf")
+```
+```{r}
+grna_genes <- c("2010315B03Rik", "Apobec1", "Atf5", "Atoh8", "Bcl6", "Calcoco1", "Cebpa", "Cebpb", "Chd9", "Chuk", "Crebl2", "Crebrf", "Creg1", "Crem", "Csrp3", "Dbp", "Esr1", "Gadd45g", "Gm14403", "Hdac11", "Hes6", "Hopx", "Hspa1a", "Id3", "Irf5", "Irf6", "Irf7", "Klf9", "Lpin1", "Macrod1", "Mafb", "Mbd1", "Nfix", "Nr0b2", "Nr1d1", "Nr1d2", "Nr1h4", "Nr1i3", "Parp14", "Parp3", "Parp6", "Parp9", "Pdcd4", "Pparg", "Prkaa2", "Prox1", "Rbl2", "Rorc", "Sat1", "Trip4", "Tsc22d3", "Ube2q2", "Xbp1", "Zbtb16", "Zbtb20", "Zfp809", "Zfp874a", "Zfp970", "Zhx2", "Zhx3", "Znfx1")
+
+
+
+PerburbSet@meta.data <- PerburbSet@meta.data %>% mutate(Pertub_Clusters = ifelse(PerburbSet@meta.data[["type_cell"]] == "NT", "NT", PerburbSet@meta.data[["RNA_snn_res.1"]]))
+
+
+PerburbSet <- SetIdent(PerburbSet, value = "Pertub_Clusters")
+```
+```{r}
+palette.snn05 <- c("#e81e63", "#d64087", "#9d27b0", "#3f51b5", "#02a8f4", "#0a91b1", "#009688", "#4caf50", "#cedd39", "#ffc009")
+names(palette.snn05) <- c("M1", "M2", "M3", "M4", "E15.5_2", "E15.5_1", "P10_2", "P10", "P1")   
+#names(palette.snn05) <- c("0","1","2","3", "4", "5", "6", "7", "8", "9")
+show_col(palette.snn05)
+```
+```{r}
+```
+
+
+```{r}
+SCpubr::do_DimPlot(sample = WT_ref, plot.axes = TRUE, reduction = "tsne", shuffle = TRUE, , font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T, colors.use = palette.snn05) & theme(aspect.ratio = 1)
+```
+
+
+```{r}
+ggsave("WT_ref_tsne.pdf")
+```
+```{r}
+SCpubr::do_DimPlot(sample = PerburbSet, plot.axes = TRUE, reduction = "phate_onUMAP10", shuffle = TRUE, group.by =  "Pertub_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T) & theme(aspect.ratio = 1)
+```
+```{r}
+SCpubr::do_NebulosaPlot(WT_ref, features = c("Nr1i3", "Nfix"), plot.axes = TRUE, reduction = "umap", font.size = 6, legend.position = "none", border.size = 2, joint = TRUE) & theme(aspect.ratio = 1)
+ggsave("Nr1i3_Nfix_Nebulosa_WT.pdf")
+```
+
+```{r}
+SCpubr::do_NebulosaPlot(WT_ref, features = c("Afp", "Igf2"), plot.axes = TRUE, reduction = "umap", font.size = 6, legend.position = "none", border.size = 2, joint = TRUE) & theme(aspect.ratio = 1)
+ggsave("Nr1i3_Nfix_Nebulosa_WT_ref.pdf")
+```
+
+
+```{r}
+SCpubr::do_NebulosaPlot(PerburbSet, features = c("Afp", "Igf2"), plot.axes = TRUE, reduction = "phate_onUMAP10", font.size = 6, legend.position = "none", border.size = 2, joint = TRUE) & theme(aspect.ratio = 1)
+ggsave("Afp_Igf2_Nebulosa_PerburbSet.pdf")
+```
+```{r}
+SCpubr::do_NebulosaPlot(PerburbSet, features = c("Nr1i3", "Nfix"), plot.axes = TRUE, reduction = "phate_onUMAP10", font.size = 6, legend.position = "none", border.size = 2, joint = TRUE) & theme(aspect.ratio = 1)
+ggsave("Nr1i3_Nfix_Nebulosa_PerburbSet.pdf")
+```
+
+```{r}
+# Compute DE genes and transform to a tibble.
+PerburbSet_de <- tibble::tibble(Seurat::FindAllMarkers(object = PerburbSet,test.use = "MAST", logfc.threshold = 0.25, min.diff.pct = 0.2, only.pos = T, max.cells.per.ident = 500, assay = "SCT"))
+```
+```{r fig.height=8, fig.width=12}
+# Default output.
+p <- SCpubr::do_GroupwiseDEPlot(sample = PerburbSet,
+                                de_genes = PerburbSet_de,
+                                min.cutoff = 1, 
+                                top_genes = 3,
+                                font.size = 8)
+
+p
+ggsave("DiffrencialGenes_perturb.pdf")
+```
+
+```{r}
+write_csv(PerburbSet_de, "Cluster_Markers_SubFig.csv")
+```
+
+
+```{r}
+pbmc.combined <- merge(WT_ref, y = PerburbSet)
+table(pbmc.combined$orig.ident)
+```
+```{r}
+pbmc.combined@meta.data <- pbmc.combined@meta.data %>% mutate(orig.ident2 = ifelse(pbmc.combined@meta.data[["orig.ident"]] == "RNA_756_RNA_757", "Perturbset", "WT_set"))
+pbmc.combined[["RNA5"]] <- as(object = pbmc.combined[["RNA"]], Class = "Assay5")
+pbmc.combined[["RNA5"]] <- split(pbmc.combined[["RNA5"]], f = pbmc.combined$orig.ident2)
+DefaultAssay(pbmc.combined) <- "RNA5"
+merged_obj <- NormalizeData(pbmc.combined)
+merged_obj <- FindVariableFeatures(merged_obj)
+merged_obj <- ScaleData(merged_obj)
+merged_obj <- RunPCA(merged_obj)
+merged_obj <- RunUMAP(merged_obj, dims = 1:30, reduction = 'pca', reduction.name = 'umap.unintegrated')
+
+merged_obj$CellType <- Idents(merged_obj)
+# merged_obj@meta.data <- merged_obj@meta.data %>% mutate(combined_clusters = ifelse(merged_obj@meta.data[["orig.ident2"]] == "WT_set", "NT", merged_obj@meta.data[["Pertub_Clusters"]]))
+```
+
+#CellType
+
+```{r}
+SCpubr::do_DimPlot(sample = merged_obj, plot.axes = TRUE, reduction = "pca", shuffle = TRUE, group.by =  "CellType", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T) & theme(aspect.ratio = 1)
+SCpubr::do_DimPlot(sample = merged_obj, plot.axes = TRUE, reduction = "umap.unintegrated", shuffle = TRUE, group.by =  "CellType", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T) & theme(aspect.ratio = 1)
+```
+
+```{r}
+merged_obj <- IntegrateLayers(object = merged_obj, method = CCAIntegration, orig.reduction = "pca", new.reduction = "integrated.cca",
+    verbose = FALSE)
+merged_obj <- IntegrateLayers(object = merged_obj, method = RPCAIntegration, orig.reduction = "pca", new.reduction = "integrated.rpca",
+    verbose = FALSE)
+merged_obj <- IntegrateLayers(object = merged_obj, method = FastMNNIntegration, orig.reduction = "pca", new.reduction = "integrated.mnn",
+    verbose = FALSE)
+# merged_obj <- IntegrateLayers(object = merged_obj, method = scVIIntegration, orig.reduction = "pca", new.reduction = "integrated.scvi",
+#     verbose = FALSE, conda_env = "/Users/magalhae/miniforge3/envs/NGS")
+```
+```{r}
+# now that integration is complete, rejoin layers
+merged_obj[["RNA5"]] <- JoinLayers(merged_obj[["RNA5"]])
+```
+```{r}
+merged_obj <- RunUMAP(merged_obj, reduction = "integrated.cca", dims = 1:30, reduction.name = 'umap.cca')
+merged_obj <- RunUMAP(merged_obj, reduction = "integrated.rpca", dims = 1:30, reduction.name = 'umap.rpca')
+merged_obj <- RunUMAP(merged_obj, reduction = "integrated.mnn", dims = 1:30, reduction.name = 'umap.mnn')
+# merged_obj <- RunUMAP(merged_obj, reduction = "integrated.scvi", dims = 1:30, reduction.name = 'scvi')
+
+```
+
+```{r fig.height=12, fig.width=12}
+SCpubr::do_DimPlot(sample = merged_obj, plot.axes = TRUE, reduction = "umap.cca", shuffle = TRUE, group.by =  "CellType", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T,
+                   idents.keep = c("11", "M1", "M2", "M3", "M4", "P10", "P10_2", "P1", "E15.5_1", "E15.5_2")) & theme(aspect.ratio = 1)
+ggsave("merged_obj_C11higlith_CCA.pdf")
+
+SCpubr::do_DimPlot(sample = merged_obj, plot.axes = TRUE, reduction = "umap.cca", shuffle = TRUE, group.by =  "CellType", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T,
+                   ) & theme(aspect.ratio = 1)
+ggsave("merged_obj_CCA.pdf")
+
+SCpubr::do_DimPlot(sample = merged_obj, plot.axes = TRUE, reduction = "umap.rpca", shuffle = TRUE, group.by =  "CellType", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T,
+                   idents.keep = c("11", "M1", "M2", "M3", "M4", "P10", "P10_2", "P1", "E15.5_1", "E15.5_2")) & theme(aspect.ratio = 1)
+SCpubr::do_DimPlot(sample = merged_obj, plot.axes = TRUE, reduction = "umap.mnn", shuffle = TRUE, group.by =  "CellType", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T,
+                   idents.keep = c("11", "M1", "M2", "M3", "M4", "P10", "P10_2", "P1", "E15.5_1", "E15.5_2")) & theme(aspect.ratio = 1)
+```
+```{r}
+SCpubr::do_DimPlot(sample = merged_obj, plot.axes = TRUE, reduction = "umap.cca", shuffle = TRUE, group.by =  "CellType", font.size = 4, legend.position = "none", raster = F, border.size = 2, label = T, repel = T,idents.keep = unique(PerburbSet@meta.data$Pertub_Clusters)) & theme(aspect.ratio = 1)
+ggsave("merged_obj_CellType_Perturb_umap.cca.pdf")
+```
+```{r}
+SCpubr::do_DimPlot(sample = merged_obj, plot.axes = TRUE, reduction = "umap.cca", shuffle = TRUE, group.by =  "CellType", font.size = 4, legend.position = "none", raster = F, border.size = 2, label = T, repel = T,idents.keep = c("M1", "M2", "M3", "M4", "P10", "P10_2", "P1", "E15.5_1", "E15.5_2")) & theme(aspect.ratio = 1)
+ggsave("merged_obj_CellType_WT_umap.cca.pdf")
+```
+
+```{r}
+SCpubr::do_NebulosaPlot(merged_obj, features = c("Nr1i3", "Nfix"), plot.axes = TRUE, reduction = "umap.cca", font.size = 6, legend.position = "none", border.size = 2, joint = TRUE) & theme(aspect.ratio = 1)
+ggsave("merged_obj_CCA_Nr1i3_Nfix_Nebulosa.pdf")
+SCpubr::do_NebulosaPlot(merged_obj, features = c("Nr1i3", "Nfix"), plot.axes = TRUE, reduction = "umap.rpca", font.size = 6, legend.position = "none", border.size = 2, joint = TRUE) & theme(aspect.ratio = 1)
+SCpubr::do_NebulosaPlot(merged_obj, features = c("Nr1i3", "Nfix"), plot.axes = TRUE, reduction = "umap.mnn", font.size = 6, legend.position = "none", border.size = 2, joint = TRUE) & theme(aspect.ratio = 1)
+```
+
+
+```{r}
+WT_ref[["RNA5"]] <- as(object = WT_ref[["RNA"]], Class = "Assay5")
+PerburbSet[["RNA5"]] <- as(object = PerburbSet[["RNA"]], Class = "Assay5")
+DefaultAssay(WT_ref) <- "RNA5"
+DefaultAssay(PerburbSet) <- "RNA5"
+WT_ref <- SCTransform(WT_ref, verbose = FALSE, assay = "RNA5",
+  new.assay.name = "SCT5")
+PerburbSet <- SCTransform(PerburbSet, verbose = FALSE, assay = "RNA5",
+  new.assay.name = "SCT5")
+```
+```{r}
+anchor <- FindTransferAnchors(
+  reference = WT_ref,
+  query = PerburbSet,
+  reference.reduction = "mnn",
+  normalization.method = "SCT",
+  dims = 1:50
+)
+```
+```{r}
+object <- MapQuery(
+  anchorset = anchor,
+  query = PerburbSet,
+  reference = WT_ref,
+  refdata = WT_ref$CellType,
+  reduction.model = "wnn.umap"
+)
+
+
+```
+
+
+```{r}
+SCpubr::do_DimPlot(sample = object, plot.axes = TRUE, reduction = "wnn.umap", shuffle = TRUE, group.by = "CellType", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T,
+                   idents.keep = c("11", "M1", "M2", "M3", "M4", "P10", "P10_2", "P1", "E15.5_1", "E15.5_2")) & theme(aspect.ratio = 1)
+```
+```{r}
+DefaultAssay(WT_ref) <- "SCT"
+WT_ref <- SetIdent(WT_ref, value = "CellType")
+WT_ref.sct <- PrepSCTFindMarkers(WT_ref)
+```
+
+```{r}
+# Compute DE genes and transform to a tibble.
+de_genes_MAST_CellType <- tibble::tibble(Seurat::FindAllMarkers(WT_ref.sct,
+    assay = "SCT",
+    slot = "data",
+    test.use = "MAST",
+    logfc.threshold = 0.25,
+    min.diff.pct = 0.20,
+    only.pos = T,
+    #max.cells.per.ident = 500,
+    recorrect_umi = F
+    )
+  )
+```
+```{r}
+Mup.genes = grep("^Mup*", de_genes_MAST_CellType$gene, value = TRUE)
+de_genes_MAST_CellTypeF <- de_genes_MAST_CellType[!(de_genes_MAST_CellType$gene %in% Mup.genes),]
+```
+```{r}
+# top25_de_genes_MAST_CellType <- de_genes_MAST_CellTypeF %>% group_by(cluster) %>% top_n(10, avg_log2FC)
+top25_de_genes_MAST_CellType <- de_genes_MAST_CellTypeF %>% group_by(cluster) %>% top_n(-10, p_val_adj)
+top25_de_genes_MAST_CellType <- top25_de_genes_MAST_CellType %>% group_by(cluster) %>% top_n(10, avg_log2FC) 
+```
+
+
+
+
+```{r}
+list_genes <- top25_de_genes_MAST_CellType[["gene"]] 
+append(list_genes, c("Cyp2f2", "Glul", "Cps1" ))
+mat<- WT_ref.sct[["SCT"]]@data %>% as.matrix()
+mat=mat[list_genes, ]
+```
+```{r}
+## scale the rows
+mat<- t(scale(t(mat)))
+
+cluster_anno<- WT_ref.sct@meta.data$CellType
+```
+
+
+```{r}
+# what's the value range in the matrix
+quantile(mat, c(0.1, 0.95))
+```
+```{r}
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(-1, 0, 1, 2),  hcl_palette = "Viridis")
+#col_fun = circlize::colorRamp2(c(-1, 0, 3), c("#FF00FF", "black", "#FFFF00"))
+# col_fun = circlize::colorRamp2(c(-0.5, 0, 1, 2), hcl_palette = "Spectral", reverse = T)
+# col_fun = circlize::colorRamp2(c(0, 1, 2), c("#440154", "#218F8D", "#FDE725"))
+```
+```{r}
+pdf("Heatmap_Expression_top10_de_genes_MAST_CellType2.pdf")
+Heatmap(mat, name = "Expression",  
+        column_split = factor(cluster_anno, levels=c("E15.5_1", "E15.5_2", "P1","P10_2", "P10", "M2", "M1","M3", "M4" )),
+        cluster_columns = T,
+        show_column_dend = FALSE,
+        cluster_column_slices = TRUE,
+        column_title_gp = gpar(fontsize = 8),
+        column_gap = unit(0.5, "mm"),
+        cluster_rows = TRUE,
+        show_row_dend = FALSE,
+        col = col_fun,
+        row_names_gp = gpar(fontsize = 4),
+        column_title_rot = 90,
+        top_annotation = HeatmapAnnotation(foo = anno_block(gp = gpar(fill = scales::hue_pal()(9)))),
+        show_column_names = FALSE,
+        use_raster = TRUE,
+        raster_quality = 4)
+dev.off()
+```
+

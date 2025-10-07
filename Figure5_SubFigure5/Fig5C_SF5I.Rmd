@@ -1,0 +1,289 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+```{r message=FALSE, warning=FALSE}
+library(biomaRt)
+library(SARTools)
+library(DESeq2)
+library(tidyverse)
+library(RColorBrewer)
+library(pheatmap)
+library(UpSetR)
+library(Seurat)
+library(cowplot)
+library(org.Mm.eg.db)
+library("colorspace")
+```
+```{r}
+targetFile <- "target_adult.txt" 
+varInt <- "Treatment"                                    # factor of interest
+condRef <- "E15"                                      # reference biological condition
+batch <- NULL
+
+colors <- c("#B80000", "#E81E63", "#8D239E", "#673AB7", "#3F51B5", "#253985", "#02A8F4", "#009688", "#8BC34A", "#FF9800", "#FE5622", "#795648", "#9E9E9E", "#617D8B","#E8ECFB")
+
+
+library(SARTools)
+target_adlt <- loadTargetFile(targetFile=targetFile, varInt=varInt, condRef=condRef, batch=batch)
+target <- loadTargetFile(targetFile="/Users/magalhae/Desktop/Atshuhiro/RNAseq_20240423/AllvsAll/target.txt", varInt=varInt, condRef=condRef, batch=batch)
+
+```
+
+```{r}
+setwd("/Users/magalhae/Desktop/Atshuhiro/RNAseq_20240423/AllvsAll/PCA")
+```
+```{r}
+vst <- read_csv("/Users/magalhae/Desktop/Atshuhiro/RNAseq_20240423/AllvsAll/AdultCount-vst.csv") %>% column_to_rownames("Id")
+```
+```{r}
+anno_df_biomart <- read_csv("/Users/magalhae/Desktop/Atshuhiro/RNAseq_20240423/AllvsAll/annotation_mm10.csv")
+```
+```{r}
+Periportal_FC4 <- read_csv("Periportal_FC4.txt")
+Pericentral_FC4 <- read_csv("Pericentral_FC4.txt")
+```
+
+```{r}
+df <- read_csv("/Users/magalhae/Desktop/Atshuhiro/RNAseq_20240423/AllvsAll/PCA/ListDegs_Adult_NTC.csv")
+
+
+
+myGeneSets <- list()
+
+for (i in 1:length(colnames(df))){
+  new_elements <- df[i]
+  names(new_elements) <- colnames(df)[i]
+  myGeneSets <- c(myGeneSets, new_elements)
+}
+
+myGeneSets <- modify_tree(myGeneSets, leaf = ~ discard(.x, is.na))
+
+
+```
+```{r}
+upset(fromList(myGeneSets))
+```
+
+```{r fig.height=4, fig.width=10}
+plot <- SARTools::PCAPlot(counts.trans=vst, group=target_adlt[,varInt], col=colors, outfile = F, ggplot_theme = theme_bw(), n=500)
+```
+```{r}
+n=min(500, nrow(vst))
+rv = apply(vst, 1, var, na.rm=TRUE)
+pca = prcomp(t(vst[order(rv, decreasing = TRUE), ][1:n,]), rank = 3)
+prp <- pca$sdev^2 * 100 / sum(pca$sdev^2)
+#prp <- round(prp[1:length(prp)],2)
+prp <- round(prp[1:3],2)
+```
+
+```{r}
+colors <- c("#B80000","#B80000", "#E81E63", "#E81E63", "#8D239E", "#8D239E", "#673AB7", "#673AB7")#, "#3F51B5", "#3F51B5", "#253985", "#253985","#02A8F4", "#02A8F4", "#009688","#009688",  "#8BC34A", "#8BC34A", "#FF9800", "#FF9800", "#FE5622", "#FE5622", "#795648", "#795648","#9E9E9E", "#9E9E9E","#617D8B","#617D8B", "#E8ECFB", "#E8ECFB")
+
+colors <- colors[1:length(colnames(vst[1:8]))]
+
+# colors <- c("#6491c0","#6491c0","#6491c0",
+#                      "#bd8fbd","#bd8fbd","#bd8fbd",
+#                      "#ed8b56", "#ed8b56", "#ed8b56")#,
+#                    #  "##2e68b1","##2e68b1","##2e68b1",
+#                   #   "##bd8fbd", "##bd8fbd", "##bd8fbd")
+labels <- rownames(plot)
+colorsg <- setNames(colors,labels )
+```
+
+```{r}
+sampleDists <- dist(t(vst))
+```
+
+```{r}
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+    stopifnot(!missing(x))
+    stopifnot(!missing(filename))
+    pdf(filename, width=width, height=height)
+    x
+    dev.off()
+}
+```
+
+
+```{r fig.height=4, fig.width=5}
+sampleDistMatrix <- as.matrix(sampleDists)
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+
+p <- pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors, 
+         cellwidth=10, cellheight=10)
+p
+save_pheatmap_pdf(p, "Mathep_distanceMatrix.pdf")
+```
+```{r fig.height=6, fig.width=12}
+pcaData = as.data.frame(pca[["x"]])
+p <- ggplot(pcaData, aes(PC1, PC2, color=colorsg)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",prp[1],"% variance")) +
+  ylab(paste0("PC2: ",prp[2],"% variance")) + 
+  coord_fixed() +
+  theme_bw() + 
+   theme(aspect.ratio = 1, legend.position = "none", panel.grid.major = element_blank() , panel.grid.minor = element_blank())
+pg<- LabelPoints(plot = p, points = labels, repel = T, min.segment.length = 0, box.padding = 0.5, max.overlaps = Inf)
+p2 <- ggplot(pcaData, aes(PC1, PC3, color=colorsg)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",prp[1],"% variance")) +
+  ylab(paste0("PC3: ",prp[3],"% variance")) + 
+  coord_fixed() +
+  theme_bw() + 
+  theme(aspect.ratio = 1, legend.position = "none", panel.grid.major = element_blank() , panel.grid.minor = element_blank())
+pg2<- LabelPoints(plot = p2, points = labels, repel = T, min.segment.length = 0, box.padding = 0.5, max.overlaps = Inf)
+
+p3 <- ggplot(pcaData, aes(PC2, PC3, color=colorsg)) +
+  geom_point(size=3) +
+  xlab(paste0("PC2: ",prp[2],"% variance")) +
+  ylab(paste0("PC3: ",prp[3],"% variance")) + 
+  coord_fixed() +
+  theme_bw() + 
+  theme(aspect.ratio = 1, legend.position = "none", panel.grid.major = element_blank() , panel.grid.minor = element_blank())
+pg3<- LabelPoints(plot = p3, points = labels, repel = T, min.segment.length = 0, box.padding = 0.5, max.overlaps = Inf)
+
+plot_grid(ncol = 3, pg, pg2, pg3)
+ggsave("Mathep_RNAseq_PCA.pdf")
+```
+```{r}
+Allvst = read_csv("/Users/magalhae/Desktop/Atshuhiro/RNAseq_20240423/AllvsAll/AllCount-vst.csv")
+Allvst <- Allvst %>% column_to_rownames("Id")
+```
+
+```{r}
+newdata <- Allvst[names(pca$center), 9:30]
+dataPred=predict(pca,t(newdata))
+pcaData<- rbind(pcaData,data.frame(dataPred))
+
+```
+```{r}
+
+
+colors <- c("#B80000","#B80000", "#E81E63", "#E81E63", "#8D239E", "#8D239E", "#673AB7", "#673AB7", "#3F51B5", "#3F51B5", "#253985", "#253985","#02A8F4", "#02A8F4", "#009688","#009688",  "#8BC34A", "#8BC34A", "#FF9800", "#FF9800", "#FE5622", "#FE5622", "#795648", "#795648","#9E9E9E", "#9E9E9E","#617D8B","#617D8B", "#E8ECFB", "#E8ECFB")
+
+colors <- colors[1:length(colnames(Allvst))]
+
+# colors <- c("#6491c0","#6491c0","#6491c0",
+#                      "#bd8fbd","#bd8fbd","#bd8fbd",
+#                      "#ed8b56", "#ed8b56", "#ed8b56")#,
+#                    #  "##2e68b1","##2e68b1","##2e68b1",
+#                   #   "##bd8fbd", "##bd8fbd", "##bd8fbd")
+labels <- rownames(pcaData)
+colorsg <- setNames(colors,labels )
+```
+```{r fig.height=6, fig.width=12}
+p <- ggplot(pcaData, aes(PC1, PC2, color=colorsg)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",prp[1],"% variance")) +
+  ylab(paste0("PC2: ",prp[2],"% variance")) + 
+  coord_fixed() +
+  theme_bw() + 
+   theme(aspect.ratio = 1, legend.position = "none", panel.grid.major = element_blank() , panel.grid.minor = element_blank())
+pg<- LabelPoints(plot = p, points = labels, repel = T, min.segment.length = 0, box.padding = 0.5, max.overlaps = Inf)
+p2 <- ggplot(pcaData, aes(PC1, PC3, color=colorsg)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",prp[1],"% variance")) +
+  ylab(paste0("PC3: ",prp[3],"% variance")) + 
+  coord_fixed() +
+  theme_bw() + 
+  theme(aspect.ratio = 1, legend.position = "none", panel.grid.major = element_blank() , panel.grid.minor = element_blank())
+pg2<- LabelPoints(plot = p2, points = labels, repel = T, min.segment.length = 0, box.padding = 0.5, max.overlaps = Inf)
+
+p3 <- ggplot(pcaData, aes(PC2, PC3, color=colorsg)) +
+  geom_point(size=3) +
+  xlab(paste0("PC2: ",prp[2],"% variance")) +
+  ylab(paste0("PC3: ",prp[3],"% variance")) + 
+  coord_fixed() +
+  theme_bw() + 
+  theme(aspect.ratio = 1, legend.position = "none", panel.grid.major = element_blank() , panel.grid.minor = element_blank())
+pg3<- LabelPoints(plot = p3, points = labels, repel = T, min.segment.length = 0, box.padding = 0.5, max.overlaps = Inf)
+
+plot_grid(ncol = 3, pg, pg2, pg3)
+ggsave("Mathep_RNAseq_PCA_integrated.pdf")
+```
+```{r fig.height=10, fig.width=10}
+sampleDistsPCA <- dist(pcaData)
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+
+p <- pheatmap(as.matrix(sampleDistsPCA),
+         clustering_distance_rows=sampleDistsPCA,
+         clustering_distance_cols=sampleDistsPCA,
+         col=colors, 
+         cellwidth=10, cellheight=10)
+p
+
+save_pheatmap_pdf(p, "Mathep_distanceMatrix_integrated.pdf")
+```
+```{r}
+pc_loadings <- pca$rotation
+
+pc_loadings <- pc_loadings %>% 
+  as_tibble(rownames = "Id")
+
+pc_loadings <- left_join(pc_loadings, anno_df_biomart, by = "Id")
+
+# print the result
+
+pc_loadings
+
+```
+
+
+
+```{r}
+pcaData.Centroid <- read_csv("pcaData.Centroid.csv") %>% column_to_rownames("Sample")
+```
+
+```{r fig.height=3, fig.width=8}
+
+
+colorSinglesample <- c("#B80000", "#E81E63", "#8D239E",  "#673AB7",  "#3F51B5", "#253985", "#02A8F4", "#009688",  "#8BC34A", "#FF9800",  "#FE5622", "#795648", "#9E9E9E","#617D8B", "#E8ECFB")
+
+colorSinglesample <- colorSinglesample[1:length(rownames(pcaData.Centroid))]
+
+# colors <- c("#6491c0","#6491c0","#6491c0",
+#                      "#bd8fbd","#bd8fbd","#bd8fbd",
+#                      "#ed8b56", "#ed8b56", "#ed8b56")#,
+#                    #  "##2e68b1","##2e68b1","##2e68b1",
+#                   #   "##bd8fbd", "##bd8fbd", "##bd8fbd")
+labels <- rownames(rownames(pcaData.Centroid))
+colorSinglesample <- setNames(colorSinglesample,labels )
+
+
+p <- ggplot(pcaData.Centroid, aes(PC1, PC2, color=colorSinglesample)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",prp[1],"% variance")) +
+  ylab(paste0("PC2: ",prp[2],"% variance")) + 
+  coord_fixed() +
+  theme_bw() + 
+   theme(aspect.ratio = 1, legend.position = "none", panel.grid.major = element_blank() , panel.grid.minor = element_blank())
+pg<- LabelPoints(plot = p, points = labels, repel = T, min.segment.length = 0, box.padding = 0.5, max.overlaps = Inf)
+p2 <- ggplot(pcaData.Centroid, aes(PC1, PC3, color=colorSinglesample)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",prp[1],"% variance")) +
+  ylab(paste0("PC3: ",prp[3],"% variance")) + 
+  coord_fixed() +
+  theme_bw() + 
+  theme(aspect.ratio = 1, legend.position = "none", panel.grid.major = element_blank() , panel.grid.minor = element_blank())
+pg2<- LabelPoints(plot = p2, points = labels, repel = T, min.segment.length = 0, box.padding = 0.5, max.overlaps = Inf)
+
+p3 <- ggplot(pcaData.Centroid, aes(PC2, PC3, color=colorSinglesample)) +
+  geom_point(size=3) +
+  xlab(paste0("PC2: ",prp[2],"% variance")) +
+  ylab(paste0("PC3: ",prp[3],"% variance")) + 
+  coord_fixed() +
+  theme_bw() + 
+  theme(aspect.ratio = 1, legend.position = "none", panel.grid.major = element_blank() , panel.grid.minor = element_blank())
+pg3<- LabelPoints(plot = p3, points = labels, repel = T, min.segment.length = 0, box.padding = 0.5, max.overlaps = Inf)
+
+plot_grid(ncol = 3, pg, pg2, pg3)
+```
+

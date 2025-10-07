@@ -1,0 +1,199 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(GSVA)
+library(GSA)
+library(tidyverse)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(ggbeeswarm)
+library(gridExtra)
+library(grid)
+setwd("/GSVA")
+```
+```{r}
+AdultvsE11x5 = read.csv("/tables/Complete/AdultvsE11x5.complete.csv" , header = T)
+AdultvsE15x5 = read.csv("/tables/Complete/AdultvsE15x5.complete.csv" , header = T)
+AdultvsP1 = read.csv("/tables/Complete/AdultvsP1.complete.csv" , header = T)
+AdultvsP10 = read.csv("/tables/Complete/AdultvsP10.complete.csv" , header = T)
+AdultvsP30 = read.csv("/tables/Complete/AdultvsP30.complete.csv" , header = T)
+
+
+AdultvsE11x5 <- AdultvsE11x5 %>% arrange(desc(stat))
+AdultvsE15x5 <- AdultvsE15x5 %>% arrange(desc(stat))
+AdultvsP1 <- AdultvsP1 %>% arrange(desc(stat))
+AdultvsP10 <- AdultvsP10 %>% arrange(desc(stat))
+AdultvsP30 <- AdultvsP30 %>% arrange(desc(stat))
+
+AdultvsE11x5 <- AdultvsE11x5[,c("GeneName", "stat")]
+AdultvsE15x5 <- AdultvsE15x5[,c("GeneName", "stat")]
+AdultvsP1 <- AdultvsP1[,c("GeneName", "stat")]
+AdultvsP10 <- AdultvsP10[,c("GeneName", "stat")]
+AdultvsP30 <- AdultvsP30[,c("GeneName", "stat")]
+
+preranket_list <- list(
+  "AdultvsE11x5" = AdultvsE11x5$GeneName,
+"AdultvsE15x5" = AdultvsE15x5$GeneName,
+"AdultvsP1" = AdultvsP1$GeneName,
+"AdultvsP10" = AdultvsP10$GeneName,
+"AdultvsP30" = AdultvsP30$GeneName
+)
+write_delim(AdultvsE11x5,"AdultvsE11x5.rnk")
+write_delim(AdultvsE15x5, "AdultvsE15x5.rnk")
+write_delim(AdultvsP1, "AdultvsP1.rnk")
+write_delim(AdultvsP10, "AdultvsP10.rnk")
+write_delim(AdultvsP30, "AdultvsP30.rnk")
+
+```
+
+```{r}
+#MeansDEGSvstSC = read_csv("/Heatmap/MeansDEG_RFC_vstSC.csv") %>% column_to_rownames(var = "GeneID")
+MeansDEGSvstSC = read_csv("/Heatmap/MeansDEG_RFC_vstSC.csv") %>% column_to_rownames(var = "GeneName")
+mat = as.matrix(MeansDEGSvstSC[,c(3:8)])
+```
+```{r}
+degs = read_csv("/DEGlist.csv")
+degs = degs[,c(7,8,9,14,15,18,20,24,25,28)]
+degs_list <- apply(degs, 2, as.list)
+
+degs_n = read_csv("/DEGlist_names.csv")
+degs_n_list <- apply(degs_n, 2, as.list)
+degs_n_list <- rapply(degs_n_list,function(x) x[!is.na(x)], how="replace")
+```
+
+```{r}
+
+gmt_file <-GSA.read.gmt("/GSVA/gmt/gene_set.Mm.gmt")
+
+gmt_anno <- gmt_file$genesets
+names(gmt_anno) <- gmt_file$geneset.names
+```
+```{r warning=TRUE}
+#res <- igsva()
+
+GSVA_gsva = read.csv("/GSVA/GSVA_gsva_es-2023-01-31.csv", header = T, row.names = 1)
+PLAGE_gsva = read.csv("/GSVA/PLAGE_gsva_es-2023-01-31.csv", header = T, row.names = 1)
+ssGSEA_gsva = read.csv("/GSVA/ssGSEA_gsva_es-2023-01-31.csv", header = T, row.names = 1)
+Zscore_gsva = read.csv("/GSVA/Zscore_gsva_es-2023-01-31.csv", header = T, row.names = 1)
+
+```
+
+```{r}
+library(org.Mm.eg.db)
+```
+```{r}
+degs_vector <- as.vector(unique(unlist(degs_list)))
+
+annots <- select(org.Mm.eg.db, keys=degs_vector,
+                columns="SYMBOL", keytype="ENSEMBL")
+```
+
+
+```{r}
+h2 <- Heatmap(GSVA_gsva,
+             name = "GSVA", #title of legend
+             col = viridis(10),
+             #col = colorRampPalette((brewer.pal(n = 10, name ="RdBu")))(10),
+             cluster_rows = T,
+             #column_order = order(as.numeric(gsub("column", "", colnames(mat)))),
+             cluster_columns = F,
+             show_row_names = TRUE,
+             cluster_row_slices = FALSE,
+             width = unit(6, "cm") , height = unit(12, "cm")
+             )
+h2 = draw(h2)
+
+```
+```{r}
+long_df <- read_csv("/GSVA/MeansDEG_RFC_vstSC_long.csv")
+pathw_df <- read_csv("/GSVA/Pathwaydf.csv")
+```
+
+```{r}
+GOMF_NUCLEAR_STEROID_RECEPTOR_ACTIVITY <- long_df %>% filter(GeneName %in% gmt_anno[[1]])
+GOMF_STEROID_BINDING <- long_df %>% filter(GeneName %in% gmt_anno[[2]])
+PID_FGF_PATHWAY <- long_df %>% filter(GeneName %in% gmt_anno[[4]])
+REACTOME_SIGNALING_BY_FGFR <- long_df %>% filter(GeneName %in% gmt_anno[[5]])
+REACTOME_SIGNALING_BY_NOTCH <- long_df %>% filter(GeneName %in% gmt_anno[[6]])
+REACTOME_SIGNALING_BY_RETINOIC_ACID <- long_df %>% filter(GeneName %in% gmt_anno[[7]])
+REACTOME_SIGNALING_BY_TGF_BETA_RECEPTOR_COMPLEX <- long_df %>% filter(GeneName %in% gmt_anno[[8]])
+REACTOME_SIGNALING_BY_WNT <- long_df %>% filter(GeneName %in% gmt_anno[[9]])
+WP_403_WNT_SIGNALING_PATHWAY <- long_df %>% filter(GeneName %in% gmt_anno[[10]])
+WP_539_WNT_SIGNALING_PATHWAY <- long_df %>% filter(GeneName %in% gmt_anno[[11]])
+WP_NOTCH_SIGNALING_PATHWAY <- long_df %>% filter(GeneName %in% gmt_anno[[12]])
+WP_RETINOL_METABOLISM <- long_df %>% filter(GeneName %in% gmt_anno[[13]])
+WP_TGFBETA_SIGNALING_PATHWAY <- long_df %>% filter(GeneName %in% gmt_anno[[14]])
+```
+```{r}
+col.order <- c("E11xx5", "E15xx5", "P1", "P10", "P30", "Adult")
+#dfb <- df %>% arrange(match(gene, OrderList), match(treatment, OrderTreatment))
+
+long_df$Sample <- factor(long_df$Sample, levels = col.order)
+```
+
+```{r fig.width=12}
+# The code below will generate the graph:
+g1 <- ggplot(GOMF_NUCLEAR_STEROID_RECEPTOR_ACTIVITY, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g2 <- ggplot(GOMF_STEROID_BINDING, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g3 <- ggplot(PID_FGF_PATHWAY, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g4 <- ggplot(REACTOME_SIGNALING_BY_FGFR, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g5 <- ggplot(REACTOME_SIGNALING_BY_NOTCH, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g6 <- ggplot(REACTOME_SIGNALING_BY_RETINOIC_ACID, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g7 <- ggplot(REACTOME_SIGNALING_BY_TGF_BETA_RECEPTOR_COMPLEX, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g8 <- ggplot(REACTOME_SIGNALING_BY_WNT, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g9 <- ggplot(WP_403_WNT_SIGNALING_PATHWAY, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g10 <- ggplot(WP_539_WNT_SIGNALING_PATHWAY, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g11 <- ggplot(WP_NOTCH_SIGNALING_PATHWAY, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g12 <- ggplot(WP_RETINOL_METABOLISM, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+g13 <- ggplot(WP_TGFBETA_SIGNALING_PATHWAY, aes(x = factor(Sample, levels = col.order), y = Expression, colour = Sample)) +
+  geom_boxplot(notch = FALSE)+ 
+  geom_beeswarm(cex = 3) + 
+  theme_bw()
+```
+```{r fig.width=12}
+grid.arrange( g1, g2, g3, g4, g5, g6, g7, g8, g9, g10, g11, g12, g13, ncol = 4)
+ggsave("Boxplots.pdf")
+```

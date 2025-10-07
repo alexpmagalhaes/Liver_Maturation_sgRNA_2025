@@ -1,0 +1,575 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(Seurat)
+library(cowplot)
+library(hdf5r)
+library(kableExtra)
+library(patchwork)
+#library(biomaRt)
+library(limma)
+library(topGO)
+#library(org.Hs.eg.db)
+library(sva)
+library(scran)
+library(tidyverse)
+library(DoubletFinder)
+library(gprofiler2)
+#library(rliger)
+library(future)
+library(harmony)
+library(pheatmap)
+library(clustree)
+library(venn)
+library(enrichR)
+library(rafalib)
+library(scPred)
+library(loomR)
+library(SeuratWrappers)
+#library(velocyto.R)
+library(Nebulosa)
+library(ggalluvial)
+library(parallel)
+library(viridis)
+library(ReductionWrappers)
+library(UCell)
+# work in parallel
+options(mc.cores = 6)
+plan("multicore", workers = 6)
+options(future.globals.maxSize = 28 * 1024 ^ 3)
+set.seed(12345)
+```
+```{r}
+# Load the Cell Ranger Matrix Data (hdf5 file) and create the base Seurat object
+RNA_756_RNA_757S <-Read10X_h5("/RNA-756_RNA-757/outs/filtered_feature_bc_matrix.h5")
+RNA_756_RNA_757 <-Read10X("/soupX_AM-RNA_756_RNA_757_filt")
+```
+
+
+```{r}
+RNA_756_RNA_757 <- CreateSeuratObject(counts = RNA_756_RNA_757, add.cell.ids = "PerburbSet",
+  assay = "RNA", project = "PerburbSet")
+```
+
+```{r}
+RNA_756_RNA_757 <- add_mito_ribo_seurat(RNA_756_RNA_757)
+```
+
+```{r fig.height=4, fig.width=12}
+feature_plot(RNA_756_RNA_757, "_raw_")
+```
+
+```{r fig.height=4, fig.width=8}
+feature_plot_scater(RNA_756_RNA_757, "_raw_")
+```
+```{r}
+PerburbSet <- FilterCells(RNA_756_RNA_757, 20, 500, 3)
+dim(PerburbSet)
+table(PerburbSet$orig.ident)
+```
+
+```{r fig.height=4, fig.width=12}
+feature_plot(PerburbSet, "_filtered_")
+```
+```{r fig.height=4, fig.width=8}
+feature_plot_scater(PerburbSet, "_filtered_")
+```
+```{r}
+PerburbSet <- remove_mito_ribo(PerburbSet)
+```
+
+```{r}
+PerburbSet = NormalizeData(PerburbSet, verbose = FALSE)
+
+PerburbSet <- FindVariableFeatures(PerburbSet, selection.method = "vst")
+PerburbSet <- ScaleData(PerburbSet, features = rownames(PerburbSet))
+
+
+PerburbSet <- RunPCA(PerburbSet, features = VariableFeatures(PerburbSet), ndims.print = 1:10, nfeatures.print = 10)
+
+PerburbSet <- CellCycleScoring(PerburbSet, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+```
+```{r}
+save(PerburbSet, RNA_756_RNA_757S, file = "PerburbSet_BeforeCellCycle.Rdata")
+```
+```{r}
+#plan("sequential")
+PerburbSet <- ScaleData(PerburbSet, vars.to.regress = c("S.Score", "G2M.Score"), features = rownames(PerburbSet))
+```
+```{r fig.height=4, fig.width=9}
+cowplot::plot_grid(ncol = 2, nrow = 1,DimPlot(PerburbSet,) & theme(aspect.ratio = 1), DimPlot(PerburbSet, group.by = "orig.ident") & theme(aspect.ratio = 1))
+```
+
+```{r}
+save(PerburbSet, RNA_756_RNA_757S, file = "PerburbSet_reference_AfterCellCycle.Rdata")
+#load(file = "WT_reference_AfterCellCycle.Rdata")
+```
+
+```{r}
+PerburbSet <- SetIdent(PerburbSet, value = "orig.ident")
+PerburbSet <- NormalizeData(PerburbSet)
+PerburbSet <- FindVariableFeatures(PerburbSet)
+PerburbSet <- ScaleData(PerburbSet)
+PerburbSet <- RunPCA(PerburbSet)
+```
+```{r}
+# Find significant PCs
+stdv <- PerburbSet[["pca"]]@stdev
+sum.stdv <- sum(PerburbSet[["pca"]]@stdev)
+percent.stdv <- (stdv / sum.stdv) * 100
+cumulative <- cumsum(percent.stdv)
+co1 <- which(cumulative > 90 & percent.stdv < 5)[1]
+co2 <- sort(which((percent.stdv[1:length(percent.stdv) - 1] - 
+                     percent.stdv[2:length(percent.stdv)]) > 0.1), 
+            decreasing = T)[1] + 1
+min.pc <- min(co1, co2)
+min.pc
+```
+```{r}
+# finish pre-processing
+PerburbSet <- RunUMAP(PerburbSet, dims = 1:min.pc)
+PerburbSet <- FindNeighbors(object = PerburbSet, dims = 1:min.pc)
+PerburbSet <- FindClusters(object = PerburbSet, resolution = 0.1)
+```
+```{r}
+# pK identification (no ground-truth)
+sweep.list <- paramSweep_v3(PerburbSet, PCs = 1:min.pc, num.cores = 6)
+sweep.stats <- summarizeSweep(sweep.list)
+bcmvn <- find.pK(sweep.stats)
+pdf(paste0("figures/","barplot_pK_doublet_", "PerburbSet", ".pdf"))
+barplot(bcmvn$BCmetric, names.arg = bcmvn$pK, las=2)
+dev.off()
+```
+```{r}
+# Optimal pK is the max of the bomodality coefficent (BCmvn) distribution
+bcmvn.max <- bcmvn[which.max(bcmvn$BCmetric),]
+optimal.pk <- bcmvn.max$pK
+optimal.pk <- as.numeric(levels(optimal.pk))[optimal.pk]
+
+## Homotypic doublet proportion estimate
+annotations <- PerburbSet@meta.data$seurat_clusters
+homotypic.prop <- modelHomotypic(annotations) 
+nExp.poi <- round(optimal.pk * nrow(PerburbSet@meta.data)) ## Assuming 7.5% doublet formation rate - tailor for your dataset
+nExp.poi.adj <- round(nExp.poi * (1 - homotypic.prop))
+```
+```{r}
+# Remove doublet cells.
+plan("sequential")
+nExp2 <- round(ncol(PerburbSet) * 0.05)# expect 4% doublets
+PerburbSet <- doubletFinder_v3(PerburbSet, pK = optimal.pk, nExp = nExp2, PCs = 1:min.pc)
+plan("multicore", workers = 6)
+
+# name of the DF prediction can change, so extract the correct column name.
+DF.name = colnames(PerburbSet@meta.data)[grepl("DF.classification", colnames(PerburbSet@meta.data))]
+```
+
+```{r}
+cowplot::plot_grid(ncol = 2, DimPlot(PerburbSet, group.by = "orig.ident") & theme(aspect.ratio = 1), 
+                   DimPlot(PerburbSet, group.by = DF.name) & theme(aspect.ratio = 1))
+ggsave(paste0("figures/","Doublet_Classifiction_", "PerburbSet", ".pdf"))
+```
+```{r}
+PerburbSet = PerburbSet[, PerburbSet@meta.data[, DF.name] == "Singlet"]
+```
+```{r}
+save(PerburbSet, file = "PerburbSet_AfterDoublet.Rdata")
+#load(file = "WT_reference_AfterDoublet.Rdata")
+```
+
+```{r}
+PerburbSet <- SetIdent(PerburbSet, value = "orig.ident")
+PerburbSet = NormalizeData(PerburbSet, verbose = FALSE)
+PerburbSet = FindVariableFeatures(PerburbSet ,selection.method = "vst", verbose = F)
+PerburbSet = ScaleData(PerburbSet, verbose = F)
+PerburbSet <- RunPCA(PerburbSet, pc.genes = PerburbSet@var.genes, npcs = 30, verbose = FALSE)
+
+PerburbSet <- RunUMAP(PerburbSet, reduction = "pca", dims = 1:30, n.components = 2, n.neighbors = 30, 
+n.epochs = 200, min.dist = 0.3, learning.rate = 1, spread = 1)
+
+res = 1
+PerburbSet <- FindNeighbors(PerburbSet, dims = 1:30 )
+
+for (res in c(0.1, 0.25, 0.5, 1, 1.5, 2)) {
+PerburbSet <- FindClusters(PerburbSet, graph.name = "RNA_snn", resolution = res, algorithm = 1, future.seed=TRUE)
+}
+
+PerburbSet <- RunTSNE(PerburbSet, reduction = "pca", dims = 1:30, perplexity = 30, max_iter = 1000,
+    theta = 0.5, eta = 200, num_threads = 6)
+
+PerburbSet <- RunUMAP(PerburbSet, reduction.name = "UMAP10_on_PCA", reduction = "pca",
+    dims = 1:30, n.components = 10, n.neighbors = 30, n.epochs = 200, min.dist = 0.3,
+    learning.rate = 1, spread = 1)
+```
+
+```{r}
+sel.clust = "RNA_snn_res.2"
+PerburbSet <- SetIdent(PerburbSet, value = sel.clust)
+```
+
+```{r fig.height=6, fig.width=5}
+clustree(PerburbSet@meta.data, prefix = "RNA_snn_res.")
+ggsave("figures/PerburbSet_ClusterTree.pdf")
+```
+```{r fig.height=5, fig.width=10}
+plot_grid(ncol = 4, nrow = 3,
+    DimPlot(PerburbSet, reduction = "pca", group.by = "orig.ident", raster = T)& theme(aspect.ratio = 1),
+    DimPlot(PerburbSet, reduction = "tsne", group.by = "orig.ident", raster = T)& theme(aspect.ratio = 1), 
+    DimPlot(PerburbSet, reduction = "umap", group.by = "orig.ident", raster = T)& theme(aspect.ratio = 1),
+    DimPlot(PerburbSet, reduction = "UMAP10_on_PCA", group.by = "orig.ident", raster = T)& theme(aspect.ratio = 1),
+    DimPlot(PerburbSet, reduction = "pca", group.by = "RNA_snn_res.0.1", raster = T)& theme(aspect.ratio = 1) & options,
+    DimPlot(PerburbSet, reduction = "tsne", group.by = "RNA_snn_res.0.1", label=TRUE, raster = T)& theme(aspect.ratio = 1) & options, 
+    DimPlot(PerburbSet, reduction = "umap", group.by = "RNA_snn_res.0.25", label=TRUE, raster = T)& theme(aspect.ratio = 1) & options,
+    DimPlot(PerburbSet, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.0.1", label=TRUE, raster = T)& theme(aspect.ratio = 1) & options)
+#ggsave(paste0("figures/","DimPlot_allReduction_preFiltered_RNA_snn_res.0.1", ".pdf"))
+```
+```{r fig.height=8, fig.width=10}
+Non_liver <- c("Hba-a1", "Hbb-bt", "Hba-a2", "Hmgb2", "Kdr", "Lyve1", "Maf", "C1qa", "C1qb", "S100a9", "S100a8", "Camp", "Ngp","Col1a1", "Col3a1", "Vim")
+Hepatocite <- c("Alb","Foxa3", "Hnf4a", "Onecut2")
+
+FeaturePlot(PerburbSet, reduction = "umap", dims = 1:2, features = Non_liver, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1)
+ggsave(paste0("figures/","PerburbSet_Non_liver_markers_umap_prefiltering", ".pdf"))
+FeaturePlot(PerburbSet, reduction = "umap", dims = 1:2, features = Hepatocite, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1)
+ggsave(paste0("figures/","PerburbSet_Hepatocite_markers_umap_prefiltering", ".pdf"))
+```
+```{r}
+umapcells <-  as.data.frame(PerburbSet[["umap"]]@cell.embeddings)
+umapcells <- filter(umapcells, UMAP_1 > 10 | UMAP_2 > 10)
+list_cells <- row.names(umapcells)
+PerburbSet <- PerburbSet[,!colnames(PerburbSet) %in% list_cells]
+```
+
+```{r}
+PerburbSet <- SetIdent(PerburbSet, value = "orig.ident")
+PerburbSet = NormalizeData(PerburbSet, verbose = FALSE)
+PerburbSet = FindVariableFeatures(PerburbSet ,selection.method = "vst", verbose = F)
+PerburbSet = ScaleData(PerburbSet, verbose = F)
+PerburbSet <- RunPCA(PerburbSet, pc.genes = PerburbSet@var.genes, npcs = 30, verbose = FALSE)
+
+PerburbSet <- RunUMAP(PerburbSet, reduction = "pca", dims = 1:30, n.components = 2, n.neighbors = 30, 
+n.epochs = 200, min.dist = 0.3, learning.rate = 1, spread = 1)
+
+res = 1
+PerburbSet <- FindNeighbors(PerburbSet, dims = 1:30 )
+
+for (res in c(0.1, 0.25, 0.5, 1, 1.5, 2)) {
+PerburbSet <- FindClusters(PerburbSet, graph.name = "RNA_snn", resolution = res, algorithm = 1, future.seed=TRUE)
+}
+
+PerburbSet <- RunTSNE(PerburbSet, reduction = "pca", dims = 1:30, perplexity = 30, max_iter = 1000,
+    theta = 0.5, eta = 200, num_threads = 6)
+
+PerburbSet <- RunUMAP(PerburbSet, reduction.name = "UMAP10_on_PCA", reduction = "pca",
+    dims = 1:30, n.components = 10, n.neighbors = 30, n.epochs = 200, min.dist = 0.3,
+    learning.rate = 1, spread = 1)
+```
+```{r}
+save(PerburbSet, RNA_756_RNA_757S, file = "PerburbSet_Filtered_RAW.Rdata")
+```
+
+```{r}
+sel.clust = "RNA_snn_res.2"
+PerburbSet <- SetIdent(PerburbSet, value = sel.clust)
+```
+
+```{r}
+PerburbSet <- DoPHATE(PerburbSet, reduction_use = "pca", reduction_save = "phate")
+PerburbSet <- DoPHATE(PerburbSet, reduction_use = "umap", reduction_save = "phate_onUMAP")
+PerburbSet <- DoPHATE(PerburbSet, reduction_use = "UMAP10_on_PCA", reduction_save = "phate_onUMAP10")
+```
+
+```{r}
+
+```
+
+
+```{r fig.height=5, fig.width=10}
+plot_grid(ncol = 4, nrow = 3,
+    DimPlot(PerburbSet, reduction = "pca", group.by = "orig.ident", raster = T, repel = T)& theme(aspect.ratio = 1),
+    DimPlot(PerburbSet, reduction = "tsne", group.by = "orig.ident", raster = T, repel = T) & theme(aspect.ratio = 1), 
+    DimPlot(PerburbSet, reduction = "umap", group.by = "orig.ident", raster = T, repel = T) & theme(aspect.ratio = 1),
+    DimPlot(PerburbSet, reduction = "UMAP10_on_PCA", group.by = "orig.ident", raster = T, repel = T) & theme(aspect.ratio = 1),
+    DimPlot(PerburbSet, reduction = "pca", group.by = "RNA_snn_res.2", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1) & options,
+    DimPlot(PerburbSet, reduction = "tsne", group.by = "RNA_snn_res.2", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1) & options, 
+    DimPlot(PerburbSet, reduction = "umap", group.by = "RNA_snn_res.2", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1) & options,
+    DimPlot(PerburbSet, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.2", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1) & options,
+    DimPlot(PerburbSet, reduction = "phate", group.by = "RNA_snn_res.2", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1),
+    DimPlot(PerburbSet, reduction = "phate_onUMAP10", group.by = "RNA_snn_res.2", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1)
+    
+    
+    )
+ggsave(paste0("figures/","PerburbSet_DimPlot_allReduction_preFiltered_RNA_snn_res.2", ".pdf"))
+```
+
+```{r fig.height=8, fig.width=10}
+Non_liver <- c("Hba-a1", "Hbb-bt", "Hba-a2", "Hmgb2", "Kdr", "Lyve1", "Maf", "C1qa", "C1qb", "S100a9", "S100a8", "Camp", "Ngp","Col1a1", "Col3a1", "Vim")
+Hepatocite <- c("Alb","Foxa3", "Hnf4a", "Onecut2")
+
+plot_grid(ncol = 1, nrow = 4,
+FeaturePlot(PerburbSet, reduction = "umap", dims = 1:2, features = Hepatocite, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1),
+FeaturePlot(PerburbSet, reduction = "UMAP10_on_PCA", dims = 1:2, features = Hepatocite, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1),
+FeaturePlot(PerburbSet, reduction = "phate", dims = 1:2, features = Hepatocite, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1) & ylim(-0.018, 0.035) & xlim(-0.018, 0.092),
+FeaturePlot(PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = Hepatocite, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1)  & ylim(-0.022, 0.03) & xlim(-0.02, 0.03)
+)
+ggsave(paste0("figures/","PerburbSet_Hepatocite_markers_umap_prefiltering", ".pdf"))
+```
+```{r}
+RNA_756_RNA_757S <- RNA_756_RNA_757S$`CRISPR Guide Capture`
+PerburbSet[["Crispr"]] <- CreateAssayObject(RNA_756_RNA_757S[, colnames(PerburbSet)])
+```
+
+```{r}
+save(PerburbSet, WT_ref, file = "Sets_PerburbSet_WT_ref.Rdata")
+```
+
+```{r}
+Neg_cells <- read_csv("/Users/magalhae/Desktop/Atshuhiro/NEW_WORK/NegCells_maybe.csv")
+Neg_cells <- Neg_cells$Barcode
+
+```
+
+
+```{r}
+
+#create cell names as metadata colum
+PerburbSet[["CellName"]] <- colnames(PerburbSet)
+
+#subset the required cells
+Neg.PerburbSet <- subset(PerburbSet, subset = CellName %in% Neg_cells )
+
+```
+
+```{r}
+DimPlot(Neg.PerburbSet, reduction = "phate_onUMAP10", group.by = "RNA_snn_res.2", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1) & options
+
+```
+
+
+```{r}
+grna_genes <- c("2010315B03Rik", "Apobec1", "Atf5", "Atoh8", "Bcl6", "Calcoco1", "Cebpa", "Cebpb", "Chd9", "Chuk", "Crebl2", "Crebrf", "Creg1", "Crem", "Csrp3", "Dbp", "Esr1", "Gadd45g", "Gm14403", "Hdac11", "Hes6", "Hopx", "Hspa1a", "Id3", "Irf5", "Irf6", "Irf7", "Klf9", "Lpin1", "Macrod1", "Mafb", "Mbd1", "Nfix", "Nr0b2", "Nr1d1", "Nr1d2", "Nr1h4", "Nr1i3", "Parp14", "Parp3", "Parp6", "Parp9", "Pdcd4", "Pparg", "Prkaa2", "Prox1", "Rbl2", "Rorc", "Sat1", "Trip4", "Tsc22d3", "Ube2q2", "Xbp1", "Zbtb16", "Zbtb20", "Zfp809", "Zfp874a", "Zfp970", "Zhx2", "Zhx3", "Znfx1")
+
+Neg.PerburbSet = ScaleData(Neg.PerburbSet, features = grna_genes, verbose = F)
+```
+
+
+```{r fig.height=10, fig.width=4}
+DoHeatmap(Neg.PerburbSet, features = grna_genes, slot = "counts")
+```
+
+```{r}
+PerburbSet_meta.data <- PerburbSet@meta.data
+PerburbSet_meta.data$CellName <- row.names(PerburbSet_meta.data)
+write_csv(PerburbSet_meta.data, "PerburbSet_meta.data.csv")
+```
+
+##scmageck
+
+```{r}
+
+feat_bc_mat=PerburbSet
+feac_crisp = PerburbSet@assays[["Crispr"]]@counts
+feat_ref=read.csv('/RNA_757_gRNAs.csv')
+feat_c = CreateSeuratObject(counts = feat_bc_mat@assays[["RNA"]],project='PerburbSet')
+feat_c_cellnames <- rownames(feat_c@meta.data)
+bc_frame <- feat_ref %>% filter(feat_ref$cell %in% feat_c_cellnames)
+bc_frame=bc_frame[bc_frame$read_count>2,]
+write.table(bc_frame,file='BARCODE_10x_RNA-756_RNA-757.txt',row.names = F,sep='\t',quote=F)
+BARCODE='/Users/magalhae/Desktop/Atshuhiro/NEW_WORK/BARCODE_10x_RNA-756_RNA-757.txt'
+```
+
+```{r}
+pdf("sgRNA_distribusion.pdf")
+featurePlot(RDS = feat_c, BARCODE=BARCODE, TYPE = "Dis")
+dev.off()
+```
+```{r}
+feat_c = pre_processRDS(BARCODE = BARCODE, RDS = feat_c)
+```
+```{r}
+# LR test
+lr_result <- scmageck_lr(BARCODE=BARCODE, RDS=feat_c, LABEL='Sample756_scmageck_lr', SIGNATURE = NULL,
+      NEGCTRL = 'Non-Targeting', PERMUTATION = 1000, SAVEPATH='/Users/magalhae/Desktop/Atshuhiro/NEW_WORK/scmageck/lr', LAMBDA=0.01)
+
+```
+```{r}
+lr_score <- lr_result[[1]]
+lr_score_pval <- lr_result[[2]]
+write_csv(lr_score, "lr_score_Sample756.csv")
+write_csv(lr_score_pval, "lr_score_pval_Sample756.csv")
+```
+
+```{r}
+meta_feat <- feat_c@meta.data
+
+meta_feat <- meta_feat%>% select(4:7)
+
+PerburbSet <- AddMetaData(object = PerburbSet, metadata = meta_feat)
+
+```
+
+
+```{r}
+
+markers_list <- unique(unlist(markers))
+
+
+for (i in markers_list){
+  gene_lr = i
+  selectPlot(GENE = gene_lr, lr_result = lr_result, CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr")
+  ggsave(paste0("lr_plot_", i, ".pdf"))
+}
+
+
+selectPlot(GENE = "Nr1i3", lr_result = lr_result, CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr")
+```
+
+
+
+
+```{r}
+PerburbSet_Meta$nFeature_sgRNA_log <- log2(PerburbSet_Meta$nFeature_sgRNA)
+
+PerburbSet@meta.data$nFeature_sgRNA_log <- log2(PerburbSet@meta.data$nFeature_sgRNA +1)
+
+```
+
+
+```{r fig.height=4, fig.width=7}
+FeaturePlot(PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = c("nCount_sgRNA", "nFeature_sgRNA", "nFeature_sgRNA_log"), ncol = 3, order = T, raster = F)  & theme(aspect.ratio = 1)  & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("PerburbSet_phate_onUMAP10_sgRNAFeatures.pdf")
+```
+
+
+```{r}
+PerburbSet <- AddModuleScore_UCell(PerburbSet, features = markers)
+signature.names <- paste0(names(markers), "_UCell")
+```
+
+```{r fig.height=8, fig.width=8}
+marker_UCell <- c("Bulk_MarkersE15.5_UCell", "Bulk_MarkersP1_UCell", "Bulk_MarkersP10_UCell", "Bulk_MarkersAdult_UCell",  "SC_MarkersE15_UCell", "SC_MarkersP1_UCell", "SC_MarkersP10_UCell", "SC_MarkersAdult_UCell", "Complement_cascade_UCell", "Glucose_Metabolism_UCell", "Drug_Metabolism_UCell", "Lipop_Chrstrl_Metab_UCell", "Fat_metabolism_UCell", "AD_function_Cyp_UCell", "AD_function_full_UCell")
+FeaturePlot(PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = marker_UCell, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("FeaturePlot_PerburbSet_markets_phate.pdf")
+```
+
+```{r}
+PerburbSet_Meta <- PerburbSet@meta.data
+write.csv(PerburbSet_Meta, file = "PerburbSet_Metadata.csv")
+```
+
+```{r}
+list_genesC13 <- c("Nr1i3", "2010315B03Rik", "Sat1", "Parp6", "Nr1d2", "Irf5", "Atf5", "Parp3", "Zbtb20", "Hopx", "Rorc", "Irf6", "Ube2q2", "Tsc22d3", "Creg1", "Pdcd4", "Trip4", "Zhx2", "Atoh8")
+```
+
+```{r}
+ListGenesPertubed <- unique(PerburbSet_Meta$gene)
+ListGenesPertubed <- ListGenesPertubed[ListGenesPertubed != "NA" | ListGenesPertubed != "Non-Targeting"]
+```
+
+
+```{r}
+PerburbSet = ScaleData(PerburbSet, verbose = F, feature = ListGenesPertubed)
+```
+```{r fig.height=12, fig.width=12}
+FeaturePlot(PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = ListGenesPertubed, ncol = 6, order = T, raster = T) & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("FeaturePlot_PerburbSet_scGuidesGenes_All_phate.pdf")
+```
+```{r fig.height=8, fig.width=8}
+FeaturePlot(PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = list_genesC13, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("FeaturePlot_PerburbSet_scGuidesGenes_C13_phate.pdf")
+```
+```{r fig.height=4, fig.width=10}
+
+DotPlot(PerburbSet, features = ListGenesPertubed, group.by = "RNA_snn_res.2", cluster.idents = T) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  scale_colour_viridis(option="viridis", direction = -1) +
+  guides(size=guide_legend(override.aes=list(shape=21, colour="black", fill="white")))
+ggsave("DotPlot_PerburbSet_scGuidesGenes_C13_phate_clustered.pdf")
+```
+
+```{r}
+DimPlot(PerburbSet, cells.highlight = Neg_cells) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+```
+
+
+```{r fig.height=10, fig.width=10}
+VlnPlot(PerburbSet, features = signature.names, split.by ="RNA_snn_res.2", group.by = "RNA_snn_res.2", ncol = 4, pt.size = 0) & theme(aspect.ratio = 2, plot.title = element_text(size=8))
+ggsave("VlnPlot_PerburbSet_markets.pdf")
+```
+
+
+```{r}
+# Compute differentiall expression
+markers_genes <- FindAllMarkers(PerburbSet, log2FC.threshold = 0.2, test.use = "wilcox",
+    min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE, max.cells.per.ident = 200,
+    assay = "RNA")
+```
+
+```{r fig.height=4, fig.width=10}
+Enbrionic_genes <- c("Afp", "H19", "Igf2", "Dlk1", "Gpc3", "Cdkn1c", "Cited1", "Rbp1", "Zfp385a", "Cdk1", "Pbx2", "Zfp395", "Foxp4", "Uhrf1", "Dnmt1", "Zbtb12", "Maff", "Sox13", "Foxm1", "Zfp618", "Hells", "Sall4", "E2f1", "Tead2", "Peg3", "Sox12")
+DotPlot(PerburbSet, features = Enbrionic_genes, group.by = "RNA_snn_res.2", cluster.idents = T) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  scale_colour_viridis(option="viridis", direction = -1) +
+  guides(size=guide_legend(override.aes=list(shape=21, colour="black", fill="white")))
+#ggsave("DotPlot_PerburbSet_scGuidesGenes_C13_phate_clustered.pdf")
+```
+
+```{r}
+PerburbSet = ScaleData(PerburbSet, verbose = F, feature = Genes_SPCA)
+```
+```{r}
+
+GenesEmb_SPCA <- c( "Afp", "H19", "Igf2", "Dlk1", "Gpc3", "Cdkn1c", "Cited1", "Rbp1", "Zfp385a", "Cdk1", "Pbx2", "Zfp395", "Foxp4", "Uhrf1", "Dnmt1", "Zbtb12", "Maff", "Sox13", "Foxm1", "Zfp618", "Hells", "Sall4", "E2f1", "Tead2", "Peg3", "Sox12")
+
+GeneAld_SPCA <- c("Mup3", "Mup20", "Serpina3k", "Scd1", "Mup17", "Wfdc21", "Orm1", "AY036118", "Apoc3", "Mug1", "Mup21", "Hamp", "Tdo2", "Cyp3a11", "Cyp2d22", "Cyp2f2", "Cyp2d9", "Otulin", "Ccdc107", "Bcap31", "Cwc15", "Tmem126a")
+
+
+
+
+PerburbSet <- RunSPCA(PerburbSet, assay = "RNA", features = GenesEmb_SPCA, npcs = 30, reduction.name = "spca_emb", reduction.key = "EmbSPC_", graph = "RNA_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+PerburbSet <- RunSPCA(PerburbSet, assay = "RNA", features = GeneAld_SPCA, npcs = 30, reduction.name = "spca_adl", reduction.key = "AldSPC_", graph = "RNA_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+```
+
+```{r}
+DimPlot(PerburbSet, reduction = "spca_emb", group.by = "RNA_snn_res.2", label=TRUE, raster = T) & theme(aspect.ratio = 1) & options
+DimPlot(PerburbSet, reduction = "spca_emb", group.by = "RNA_snn_res.2", label=TRUE, raster = T, dims = c(1,3)) & theme(aspect.ratio = 1) & options
+DimPlot(PerburbSet, reduction = "spca_emb", group.by = "RNA_snn_res.2", label=TRUE, raster = T, dims = c(2,3)) & theme(aspect.ratio = 1) & options
+```
+```{r fig.height=3, fig.width=10}
+VizDimLoadings(PerburbSet, dims = 1:6, reduction = "spca_emb", ncol = 6, balanced = T)
+```
+```{r}
+ElbowPlot(PerburbSet, reduction = "spca_emb", ndims = 25)
+```
+
+
+
+```{r}
+PerburbSet = ScaleData(PerburbSet, verbose = F, feature = Genes_SPCA_dif)
+PerburbSet <- RunSPCA(PerburbSet, assay = "RNA", features = Genes_SPCA_dif, npcs = 30, reduction.name = "spca", reduction.key = "SPC_", graph = "RNA_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+DimPlot(PerburbSet, reduction = "spca", group.by = "RNA_snn_res.2", label=TRUE, raster = T, dims = c(1, 2)) & theme(aspect.ratio = 1) & options
+ggsave(paste0("SPCA_PerburbSet_", "Genes_SPCA_dif", ".pdf"))
+
+
+PerburbSet = ScaleData(PerburbSet, verbose = F, feature = Genes_SPCA_DiffBulk)
+PerburbSet <- RunSPCA(PerburbSet, assay = "RNA", features = Genes_SPCA_DiffBulk, npcs = 30, reduction.name = "spca", reduction.key = "SPC_", graph = "RNA_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+DimPlot(PerburbSet, reduction = "spca", group.by = "RNA_snn_res.2", label=TRUE, raster = T, dims = c(1, 2)) & theme(aspect.ratio = 1) & options
+ggsave(paste0("SPCA_PerburbSet_", "Genes_SPCA_DiffBulk", ".pdf"))
+
+for (i in 1:16){
+  PerburbSet = ScaleData(PerburbSet, verbose = F, feature = markers[[i]])
+  PerburbSet <- RunSPCA(PerburbSet, assay = "RNA", features = markers[[i]], npcs = 30, reduction.name = "spca", reduction.key = "SPC_", graph = "RNA_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+  DimPlot(PerburbSet, reduction = "spca", group.by = "RNA_snn_res.2", label=TRUE, raster = T, dims = c(1, 2)) & theme(aspect.ratio = 1) & options
+  ggsave(paste0("SPCA_PerburbSet_", names(markers)[i], ".pdf"))
+}
+```
+
+```{r}
+
+
+DimPlot(PerburbSet, reduction = "spca_emb", group.by = "RNA_snn_res.2", label=TRUE, raster = T, dims = c(2, 3)) & theme(aspect.ratio = 1) & options
+DimPlot(PerburbSet, reduction = "spca_adl", group.by = "RNA_snn_res.2", label=TRUE, raster = T, dims = c(2, 3)) & theme(aspect.ratio = 1) & options
+```
+
+

@@ -1,0 +1,320 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(Seurat)
+library(cowplot)
+library(hdf5r)
+library(kableExtra)
+library(patchwork)
+#library(biomaRt)
+library(limma)
+library(topGO)
+#library(org.Hs.eg.db)
+library(sva)
+library(scran)
+library(tidyverse)
+library(DoubletFinder)
+library(gprofiler2)
+library(rliger)
+library(future)
+library(harmony)
+library(pheatmap)
+library(clustree)
+library(venn)
+library(enrichR)
+library(rafalib)
+library(scPred)
+library(loomR)
+library(SeuratWrappers)
+#library(velocyto.R)
+library(Nebulosa)
+library(ggalluvial)
+library(parallel)
+library(viridis)
+library(ReductionWrappers)
+library(UCell)
+library(scales)
+# work in parallel
+options(mc.cores = 6)
+plan("multicore", workers = 6)
+options(future.globals.maxSize = 28 * 1024 ^ 3)
+set.seed(12345)
+setwd("/Users/magalhae/Desktop/Atshuhiro/NEW_WORK/")
+```
+
+
+```{r}
+rm(list=setdiff(ls(), c("WT_ref", "WT.integrated_1")))
+WTref.list <- SplitObject(WT_ref, split.by = "orig.ident")
+```
+```{r}
+s.genes <- c("Mcm5", "Pcna", "Tyms", "Fen1", "Mcm2", "Mcm4", "Rrm1", "Ung", "Gins2", "Mcm6", "Cdca7", "Dtl", "Prim1", "Uhrf1", "Cenpu", "Hells", "Rfc2", "Rpa2", "Nasp", "Rad51ap1", "Gmnn", "Wdr76", "Slbp", "Ccne2", "Ubr7", "Pold3", "Msh2", "Atad2", "Rad51", "Rrm2", "Cdc45", "Cdc6", "Exo1", "Tipin", "Dscc1", "Blm", "Casp8ap2", "Usp1", "Clspn", "Pola1", "Chaf1b", "Brip1", "E2f8")
+
+g2m.genes <- c("Hmgb2", "Cdk1", "Nusap1", "Ube2a", "Birc5", "Tpx2", "Top2a", "Ndc80", "Cks2", "Nuf2", "Cks1b", "Mki67", "Tmpo", "Cenpf", "Tacc3", "Pimreg", "Smc4", "Ccnb2", "Ckap2l", "Ckap2", "Aurkb", "Bub1", "Kif11", "Anp32e", "Tubb4b", "Gtse1", "Kif20b", "Hjurp", "Cdca3", "Jpt1", "Cdc20", "Ttk", "Cdc25c", "Kif2c", "Rangap1", "Ncapd2", "Dlgap5", "Cdca2", "Cdca8", "Ect2", "Kif23", "Hmmr", "Aurka", "Psrc1", "Anln", "Lbr", "Ckap5", "Cenpe", "Ctcf", "Nek2", "G2e3", "Gas2l3", "Cbx5", "Cenpa")
+
+WTref.list <- lapply(X = WTref.list, FUN = function(x) {
+    x <- NormalizeData(x, verbose = FALSE)
+    x <- FindVariableFeatures(x, verbose = FALSE, nfeatures = 5000)
+    x <- CellCycleScoring(x, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+})
+```
+```{r}
+features <- SelectIntegrationFeatures(object.list = WTref.list)
+WTref.list <- lapply(X = WTref.list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)#, vars.to.regress = c("S.Score", "G2M.Score"))
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+```
+```{r}
+anchors <- FindIntegrationAnchors(object.list = WTref.list, reference = c(1, 2), reduction = "rpca",
+    dims = 1:50,   anchor.features = 5000, k.anchor = 5)
+WT.integrated <- IntegrateData(anchorset = anchors, dims = 1:50)
+DefaultAssay(WT.integrated) <- "integrated"
+```
+
+
+```{r}
+WT.integrated <- ScaleData(WT.integrated, verbose = FALSE, vars.to.regress = c("S.Score", "G2M.Score"))
+#WT.integrated <- FindVariableFeatures(WT.integrated, verbose = FALSE)
+WT.integrated <- RunPCA(WT.integrated, npcs = 30, verbose = FALSE) 
+
+WT.integrated <- RunUMAP(WT.integrated, reduction = "pca", dims = 1:30, n.components = 2, n.neighbors = 30, 
+n.epochs = 200, min.dist = 0.3, learning.rate = 1, spread = 1)
+
+res = 1
+WT.integrated <- FindNeighbors(WT.integrated, dims = 1:30 )
+
+
+WT.integrated <- FindClusters(WT.integrated, resolution = 0.5, algorithm = 1, future.seed=TRUE)
+
+WT.integrated <- RunTSNE(WT.integrated, reduction = "pca", dims = 1:30, perplexity = 30, max_iter = 1000,
+    theta = 0.5, eta = 200, num_threads = 6)
+
+WT.integrated <- RunUMAP(WT.integrated, reduction.name = "UMAP10_on_PCA", reduction = "pca",
+    dims = 1:30, n.components = 10, n.neighbors = 30, n.epochs = 200, min.dist = 0.3,
+    learning.rate = 1, spread = 1)
+
+WT.integrated <- DoPHATE(WT.integrated, reduction_use = "pca", reduction_save = "phate")
+```
+
+```{r}
+cowplot::plot_grid(ncol = 2, nrow = 1,DimPlot(WT.integrated, group.by = "orig.ident", cols = palette.pbmc) & theme(aspect.ratio = 1), DimPlot(WT.integrated, group.by = "Phase") & theme(aspect.ratio = 1))
+```
+```{r}
+palette.pbmc <- c("#2096f3", "#673ab7", "#009688", "#e81e63")
+names(palette.pbmc) <- c("Adult_liver", "E15.5", "P1_liver", "P10_liver")
+show_col(palette.pbmc)
+```
+
+```{r}
+gene_guides <- c("2010315B03Rik", "Apobec1", "Atf5", "Atoh8", "Bcl6", "Calcoco1", "Cebpa", "Cebpb", "Chd9", "Chuk", "Crebl2", "Crebrf", "Creg1", "Crem", "Csrp3", "Dbp", "Esr1", "Gadd45g", "Gm14403", "Hdac11", "Hes6", "Hopx", "Hspa1a", "Id3", "Irf5", "Irf6", "Irf7", "Klf9", "Lpin1", "Macrod1", "Mafb", "Mbd1", "Nfix", "Nr0b2", "Nr1d1", "Nr1d2", "Nr1h4", "Nr1i3", "Parp14", "Parp3", "Parp6", "Parp9", "Pdcd4", "Pparg", "Prkaa2", "Prox1", "Rbl2", "Rorc", "Sat1", "Trip4", "Tsc22d3", "Ube2q2", "Xbp1", "Zbtb16", "Zbtb20", "Zfp809", "Zfp874a", "Zfp970", "Zhx2", "Zhx3", "Znfx1")
+
+```
+
+```{r}
+sel.clust = "RNA_snn_res.0.5"
+WT.integrated <- SetIdent(WT.integrated, value = sel.clust)
+markers_genes <- FindAllMarkers(WT.integrated, log2FC.threshold = 0.25, test.use = "wilcox",
+    min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE, max.cells.per.ident = 200,
+    assay = "RNA")
+```
+
+```{r}
+pbmc.big_f <- ScaleData(pbmc.big_f, features = c("Nfix", "Mef2a", "Prkcq", "Nr1i3", "Rxra", "Rxrb", "Rxrg" ), verbose = FALSE)
+```
+
+
+```{r fig.height=4, fig.width=10}
+VlnPlot(WT.integrated, features = c("Nfix", "Mef2a", "Prkcq", "Nr1i3", "Rxra", "Rxrb", "Rxrg", "Thrb", "Thra" ), group.by = "orig.ident", ncol = 7, pt.size = 0, cols = palette.pbmc)
+```
+```{r fig.height=8, fig.width=10}
+FeaturePlot(WT.integrated, reduction = "umap", dims = 1:2, features = c("Nfix", "Mef2a", "Prkcq", "Nr1i3", "Rxra", "Rxrb", "Rxrg" ), ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1)
+```
+
+```{r fig.height=6, fig.width=6}
+options = guides(color = guide_legend(override.aes = list(size=3), ncol=2))
+# plot_grid(ncol = 3, nrow = 4,
+#     DimPlot(WT.integrated, reduction = "pca", group.by = "orig.ident", raster = T, cols = palette.pbmc) & theme(aspect.ratio = 1),
+#     DimPlot(WT.integrated, reduction = "tsne", group.by = "orig.ident", raster = T, cols = palette.pbmc) & theme(aspect.ratio = 1), 
+#     DimPlot(WT.integrated, reduction = "umap", group.by = "orig.ident", raster = T, cols = palette.pbmc) & theme(aspect.ratio = 1),
+#     DimPlot(WT.integrated, reduction = "UMAP10_on_PCA", group.by = "orig.ident", raster = T, cols = palette.pbmc) & theme(aspect.ratio = 1),
+#     DimPlot(WT.integrated, reduction = "phate", group.by = "orig.ident", raster = T, cols = palette.pbmc) & theme(aspect.ratio = 1),
+#     DimPlot(WT.integrated, reduction = "phate_onUMAP10", group.by = "orig.ident", raster = T, cols = palette.pbmc) & theme(aspect.ratio = 1),
+#     DimPlot(WT.integrated, reduction = "pca", group.by = "RNA_snn_res.0.1", raster = T, repel = T) & theme(aspect.ratio = 1) & options,
+#     DimPlot(WT.integrated, reduction = "tsne", group.by = "RNA_snn_res.0.1", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1) & options, 
+#     DimPlot(WT.integrated, reduction = "umap", group.by = "RNA_snn_res.0.1", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1) & options,
+#     DimPlot(WT.integrated, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.0.1", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1) & options,
+#     DimPlot(WT.integrated, reduction = "phate", group.by = "RNA_snn_res.0.1", label=TRUE, raster = T, repel = T) & theme(aspect.ratio = 1) & options)
+#ggsave("Reductions_WT_ref_intgrated_RPCA_raster.pdf")
+
+plot_grid(ncol = 3, nrow = 4,
+    DimPlot(WT.integrated, reduction = "pca", group.by = "orig.ident", raster = F, cols = palette.pbmc) & theme(aspect.ratio = 1),
+    DimPlot(WT.integrated, reduction = "tsne", group.by = "orig.ident", raster = F, cols = palette.pbmc) & theme(aspect.ratio = 1), 
+    DimPlot(WT.integrated, reduction = "umap", group.by = "orig.ident", raster = F, cols = palette.pbmc) & theme(aspect.ratio = 1),
+    DimPlot(WT.integrated, reduction = "UMAP10_on_PCA", group.by = "orig.ident", raster = F, cols = palette.pbmc) & theme(aspect.ratio = 1),
+    DimPlot(WT.integrated, reduction = "phate", group.by = "orig.ident", raster = F, cols = palette.pbmc) & theme(aspect.ratio = 1),
+    DimPlot(WT.integrated, reduction = "phate_onUMAP10", group.by = "orig.ident", raster = F, cols = palette.pbmc) & theme(aspect.ratio = 1),
+    DimPlot(WT.integrated, reduction = "pca", group.by = "RNA_snn_res.0.1", raster = F, repel = T) & theme(aspect.ratio = 1) & options,
+    DimPlot(WT.integrated, reduction = "tsne", group.by = "RNA_snn_res.0.1", label=TRUE, raster = F, repel = T) & theme(aspect.ratio = 1) & options, 
+    DimPlot(WT.integrated, reduction = "umap", group.by = "RNA_snn_res.0.1", label=TRUE, raster = F, repel = T) & theme(aspect.ratio = 1) & options,
+    DimPlot(WT.integrated, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.0.1", label=TRUE, raster = F, repel = T) & theme(aspect.ratio = 1) & options,
+    DimPlot(WT.integrated, reduction = "phate", group.by = "RNA_snn_res.0.1", label=TRUE, raster = F, repel = T) & theme(aspect.ratio = 1) & options)
+#ggsave("Reductions_WT_ref_intgrated_RPCA_vector.pdf")
+```
+
+```{r fig.height=4, fig.width=10}
+Zone1 <- c("Cyp2f2", "Asl", "Alb", "Acly", "G6pc", "Igf1", "Acly", "Sox9","Cadheri")
+Zone2 <- c("Hamp", "Hamp2", "Igfbp2", "Mup3", "Cyp8b1")
+Zone3 <- c("Cyp1a2", "Rnase4", "Glul", "Gsta3", "Ugt1a1", "Cyp2e1", "CYp27a1", "Oat", "Axin2", "Nt5e", "Cd73")
+
+FeaturePlot(WT.integrated, reduction = "umap", dims = 1:2, features = Zone1, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1)
+FeaturePlot(WT.integrated, reduction = "umap", dims = 1:2, features = Zone2, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1)
+FeaturePlot(WT.integrated, reduction = "umap", dims = 1:2, features = Zone3, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1)
+```
+
+```{r fig.height=3, fig.width=6}
+plot_grid(ncol = 3, nrow = 2,
+    DimPlot(WT.integrated, reduction = "pca", group.by = "RNA_snn_res.0.5", raster = F, repel = T) & theme(aspect.ratio = 1) & options,
+    DimPlot(WT.integrated, reduction = "tsne", group.by = "RNA_snn_res.0.5", label=TRUE, raster = F, repel = T) & theme(aspect.ratio = 1) & options, 
+    DimPlot(WT.integrated, reduction = "umap", group.by = "RNA_snn_res.0.5", label=TRUE, raster = F, repel = T) & theme(aspect.ratio = 1) & options,
+    DimPlot(WT.integrated, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.0.5", label=TRUE, raster = F, repel = T) & theme(aspect.ratio = 1) & options,
+    DimPlot(WT.integrated, reduction = "phate", group.by = "RNA_snn_res.0.5", label=TRUE, raster = F, repel = T) & theme(aspect.ratio = 1) & options)
+```
+```{r}
+Zone1 <- c("Cyp2f2", "Asl", "Alb", "Acly", "G6pc", "Igf1", "Acly", "Sox9","Cadheri")
+Zone2 <- c("Hamp", "Hamp2", "Igfbp2", "Mup3", "Cyp8b1")
+Zone3 <- c("Cyp1a2", "Rnase4", "Glul", "Gsta3", "Ugt1a1", "Cyp2e1", "CYp27a1", "Oat", "Axin2", "Nt5e", "Cd73")
+```
+
+
+```{r fig.height=6, fig.width=6}
+Non_liver <- c("Hba-a1", "Hbb-bt", "Hba-a2", "Hmgb2", "Kdr", "Lyve1", "Maf", "C1qa", "C1qb", "S100a9", "S100a8", "Camp", "Ngp","Col1a1", "Col3a1", "Vim")
+Hepatocite <- c("Alb","Foxa3", "Hnf4a", "Onecut2")
+FeaturePlot(WT.integrated, reduction = "umap", dims = 1:2, features = Non_liver, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1)
+FeaturePlot(WT.integrated, reduction = "umap", dims = 1:2, features = Hepatocite, ncol = 4, order = T, raster = T) & theme(aspect.ratio = 1)
+```
+```{r}
+
+markers <- list()
+markers$Bulk_MarkersE15.5 <- c("Dlk1", "Cited1", "Tnnc1", "Scd2", "Shbg", "Rian", "Phgdh", "Spink1", "Gsn", "Slc36a2")
+markers$SC_MarkersE15 <- c("Afp", "Serpina6", "Mt2", "Meg3", "Dlk1", "Gpc3", "Rian", "Cdkn1c", "Bex1", "Scd2", "Bex2", "Bex4", "Bex3", "Grb10", "Tceal9", "Spink1", "Peg3", "Pde4d", "Psat1", "Kcnq1ot1", "Airn", "Gsn", "Phgdh", "Psph", "Robo1")
+
+markers$SC_MarkersP1 <- c("Tff3", "Eif4ebp3", "Akr1b7", "Ankrd55", "3930402G23Rik", "Tor3a", "Smad9", "A330069K06Rik", "Soat1", "Adgrg2", "Gadd45b", "Akr1c18", "Cyp4a14", "Tram2", "Il1rn", "Cyp39a1", "Txnip", "Defb1")
+markers$Bulk_MarkersP1 <- c("Apoa4", "Cyp4a14", "Apcs", "Fabp4", "Tff3", "Akr1b7", "Mapk13", "Pglyrp1", "Pdk4", "Gm10680", "Tff3", "Txnip", "Cyp39a1", "Akr1c18", "3930402G23Rik", "Gadd45b", "Tor3a", "Ankrd55")
+
+markers$Bulk_MarkersP10 <- c("Prom1", "Sgk1", "Tsc22d1", "Sgsm2", "Slc22a27", "Serpine1", "Sult2a5", "Inhbb")
+markers$SC_MarkersP10 <- c("Cyp2b9", "Sult2a1", "Abhd2", "Prlr", "Lpl", "Agt", "Igfbp2", "Tox", "Sult2a5", "Gk", "Ube2e2", "B3galt1", "Itih2", "Klf12", "Alcam", "Chka", "Sox5")
+
+
+markers$Bulk_MarkersAdult <- c("Csrp3", "Thrsp", "Hopx", "Dbp", "Gadd45g", "Gm14403", "Creg1", "Hes6", "Zfp809", "Zfp874a")
+markers$SC_MarkersAdult <- c("Mup3", "Mup20", "Serpina3k", "Mup11", "Scd1", "Mup17", "Wfdc21", "Orm1", "AY036118", "Mup7", "Apoc3", "Mug1", "Mup21", "Hamp", "Tdo2", "Cyp3a11", "Mup1", "Cyp2d22", "Cyp2f2", "Cyp2d9", "Otulin", "Ccdc107", "Bcap31", "Cwc15", "Tmem126a")
+
+
+markers$Complement_cascade <- c("Serpina3k", "Serpina3m", "Serpina12", "Serpina3n", "Serpina1e", "Serping1", "Serpina1c", "C6", "C9", "C4b", "C4a", "C8a", "C8g", "C1rb", "C1ra", "F9", "F7")
+markers$Glucose_Metabolism <- c("Aldob", "Fbp1", "Pck1", "G6pc", "Pdk2", "Suclg2", "Prps1")
+markers$Drug_Metabolism<- c("Pon1", "Ephx1", "Ephx2", "Gpx1", "Nat8", "Nat2", "Mgst1", "Blvrb", "Mgst1")
+markers$Lipop_Chrstrl_Metab <- c("Hmgcs2", "Hmgcl", "Angptl4", "Akr1d1", "Tm7sf3", "Osbpl9", "Osbpl1a", "Osbpl8", "Colec12")
+
+markers$Fat_metabolism <- c("Acsm5", "Acsm1", "Acsm3", "Acss3", "Acss2", "Acsf2", "Gpd1", "Gpd2", "Acox1", "Acox3", "Bdh2", "Ehhadh", "Acot12", "Acadsb", "Acad8", "Acad11", "Acaa1b", "Acaa1a", "Gcdh", "Eci2", "Decr2", "Cpt1a", "Crot")
+
+markers$AD_function_Cyp <- c("Cyp2c55", "Cyp2c29", "Cyp2c38", "Cyp2c54", "Cyp4a12b", "Cyp4f14", "Cyp2c50", "Cyp7b1", "Cyp4a32", "Cyp2e1", "Cyp4a12a", "Cyp4a10", "Cyp1a2", "Cyp3a25", "Cyp3a59", "Cyp4a14", "Cyp2j5", "Cyp2f2", "Cyp3a11", "Cyp2u1", "Cyp2d40", "Cyp2d9", "Cyp2c37", "Cyp27a1", "Cyp2a5", "Cyp3a41a", "Cyp8b1", "Cyp2c67", "Cyp3a44", "Cyp7a1", "Cyp4v3", "Cyp3a13", "Cyp2a12", "Cyp2c70", "Cyp2r1", "Cyp2j6", "Cyp2d11", "Cyp2d10", "Cyp4a31", "Cyp2a4", "Cyp4f15", "Cyp2c69", "Cyp4f13", "Cyp2c40", "Cyp2d22", "Cyp2c44", "Cyp2d26")
+
+
+markers$AD_function_full <- c("Ugt2a3", "Ugt2b1", "Ugt3a2", "Ugt1a1", "Ugt2b38", "Ugt2b37", "Ugt2b5", "Ugt1a9", "Ugt3a1", "Ugt1a5", "Ugt2b36", "Ugt1a2", "Ugt1a6a", "Ugt2b35", "Ugt1a6b", "Adh4", "Adh1", "Aldh1a1", "Aldh1a7", "Aldh1l1", "Aldh2", "Aldh6a1", "Aldh8a1", "Fmo2", "Fmo5", "Ces3b", "Ces3a", "Ces1f", "Ces1b", "Ces1c", "Ces2c", "Ces2g", "Ces2e", "Ces1e", "Ces2a", "Ces1g", "Ces1d", "Gsta2", "Gsta1", "Gstk1", "Gstm2", "Gstp1", "Gstp2", "Gsta3", "Gstm6", "Gstm3", "Sult5a1", "Sult1b1", "Abcc3", "Abcg5", "Abcg8", "Abcd3", "Abcb11", "Abca8a", "Abcb4", "Abca6", "Abca2", "Abcb6", "Sult5a1", "Sult1b1", "Sult1d1", "Slc22a7", "Slc22a28", "Slc22a30", "Slco2b1", "Slc10a2", "Slco1a4", "Slc22a1", "Slco1a1", "Slc1a2", "Slc41a2", "Slco1b2", "Slc17a4", "Slc17a2", "Slc25a30", "Slc25a47", "Slc17a1", "Slc27a5", "Slc10a1", "Slc6a9", "Slc3a1", "Slc25a25", "Slc22a5", "Slc25a16", "Slc16a10", "Slc29a1", "Slc46a3", "Slc30a10", "Slc25a45", "Slc4a4", "Slc38a3", "Slc25a22", "Slc38a4", "Slc7a2", "Slc48a1", "Slc25a15", "Slc17a5", "Slc27a2", "Slc6a12", "Slc10a5", "Slc25a20", "Apol9b", "Apol9a", "Apoa4", "Apoa5", "Apoc3", "Apon", "Apol7a", "Apoc1", "Apoe", "Apoc4", "Hsd17b6", "Hsd3b5", "Hsd11b1", "Hsd3b2", "Hsd3b3", "Hsd3b7", "Hsd17b13", "Hsd17b4")
+markers$Genes_Emb <- c("Afp", "H19", "Igf2", "Dlk1", "Gpc3", "Cdkn1c", "Cited1", "Rbp1", "Zfp385a", "Cdk1", "Pbx2", "Zfp395", "Foxp4", "Uhrf1", "Dnmt1", "Zbtb12", "Maff", "Sox13", "Foxm1", "Zfp618", "Hells", "Sall4", "E2f1", "Tead2", "Peg3", "Sox12")
+
+markers$HepaticProgenitor <- c("Alb", "Hnf4a", "Hnf1a", "Gata6", "Gata4", "Afp", "Krt8", "Krt18", "Krt19","Gsta1")
+
+markers$HepatocyteMarkers <- c("Alb", "Hnf4a", "Hnf1a", "Krt18", "Krt19","Gsta1", "Apoa1","Abcc2", "Cdh1")
+
+markers$Cluster3 <- c("Six5", "Meis1", "Foxp4", "Dnmt1", "Top2a", "Uhrf1", "E2f1", "Foxm1", "Cdk1", "Cdkn3", "Igf2", "H19", "Slc1a4", "Slc44a3", "Cyp4f16", "Cdkn1c", "Mycn", "Slc2a1", "Slc36a2", "Igsf1", "Dlk1", "Cited1", "Foxj1", "Maff", "E2f2", "Sox13", "Sall4", "Afp", "Klf7", "Klf1", "Gpc3", "Myc", "Sox12", "Pbx2", "Cdk4", "Dnmt3a", "Id1", "Arid3b")
+
+markers$Zone1 <- c("Cyp2f2", "Asl", "Alb", "Acly", "G6pc", "Igf1", "Acly", "Sox9","Cadheri")
+markers$Zone2 <- c("Hamp", "Hamp2", "Igfbp2", "Mup3", "Cyp8b1")
+markers$Zone3 <- c("Cyp1a2", "Rnase4", "Glul", "Gsta3", "Ugt1a1", "Cyp2e1", "CYp27a1", "Oat", "Axin2", "Nt5e", "Cd73")
+
+
+```
+```{r fig.height=4, fig.width=10}
+WT.integrated <- AddModuleScore_UCell(WT.integrated, features = markers)
+signature.names <- paste0(names(markers), "_UCell")
+```
+
+```{r}
+DefaultAssay(WT.integrated) <- "RNA"
+# Define an order of cluster identities
+my_levels <- c("E15.5","P1_liver","P10_liver","Adult_liver")
+
+# Relevel object@ident
+WT.integrated$orig.ident <- factor(x = WT.integrated$orig.ident, levels = my_levels)
+```
+```{r fig.height=4, fig.width=10}
+VlnPlot(WT.integrated, features = signature.names, group.by = "orig.ident", ncol = 7, pt.size = 0) & theme(aspect.ratio = 1, plot.title = element_text(size=8))
+ggsave("VlnPlot_WT_integrated_ref_markets.pdf")
+
+```
+
+```{r}
+WT.integrated = ScaleData(WT.integrated, verbose = F, feature = markers[[17]])
+WT.integrated <- RunSPCA(WT.integrated, assay = "RNA", features = markers[[17]], npcs = 30, reduction.name = "spca_progenitor", reduction.key = "SPC_", graph = "integrated_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+
+WT.integrated = ScaleData(WT.integrated, verbose = F, feature = markers[[16]])
+WT.integrated <- RunSPCA(WT.integrated, assay = "RNA", features = markers[[16]], npcs = 30, reduction.name = "spca_Emb", reduction.key = "SPC_", graph = "integrated_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+
+WT.integrated = ScaleData(WT.integrated, verbose = F, feature = markers[[15]])
+WT.integrated <- RunSPCA(WT.integrated, assay = "RNA", features = markers[[15]], npcs = 30, reduction.name = "spca_ADfunc", reduction.key = "SPC_", graph = "integrated_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+
+WT.integrated = ScaleData(WT.integrated, verbose = F, feature = markers[[14]])
+WT.integrated <- RunSPCA(WT.integrated, assay = "RNA", features = markers[[14]], npcs = 30, reduction.name = "spca_Cyp", reduction.key = "SPC_", graph = "integrated_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+
+WT.integrated = ScaleData(WT.integrated, verbose = F, feature = markers[[8]])
+WT.integrated <- RunSPCA(WT.integrated, assay = "RNA", features = markers[[8]], npcs = 30, reduction.name = "spca_scDiffAD", reduction.key = "SPC_", graph = "integrated_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+
+WT.integrated = ScaleData(WT.integrated, verbose = F, feature = markers[[19]])
+WT.integrated <- RunSPCA(WT.integrated, assay = "RNA", features = markers[[19]], npcs = 30, reduction.name = "spca_Cluster3", reduction.key = "SPC_", graph = "integrated_snn", verbose = TRUE, seed.use = 12345, approx=FALSE)
+```
+```{r fig.height=4, fig.width=6}
+
+plot_grid(ncol = 3, nrow = 2,
+          DimPlot(WT.integrated, reduction = "spca_progenitor", group.by = "orig.ident", label=TRUE, raster = T) & theme(aspect.ratio = 1),
+          DimPlot(WT.integrated, reduction = "spca_Emb", group.by = "orig.ident", label=TRUE, raster = T) & theme(aspect.ratio = 1),
+          DimPlot(WT.integrated, reduction = "spca_ADfunc", group.by = "orig.ident", label=TRUE, raster = T) & theme(aspect.ratio = 1),
+          DimPlot(WT.integrated, reduction = "spca_Cyp", group.by = "orig.ident", label=TRUE, raster = T) & theme(aspect.ratio = 1),
+          DimPlot(WT.integrated, reduction = "spca_scDiffAD", group.by = "orig.ident", label=TRUE, raster = T) & theme(aspect.ratio = 1),
+          DimPlot(WT.integrated, reduction = "spca_Cluster3", group.by = "orig.ident", label=TRUE, raster = T) & theme(aspect.ratio = 1)
+          )
+
+```
+```{r}
+sds <- slingshot(Embeddings(WT.integrated, "spca_Cyp"), clusterLabels = WT.integrated$RNA_snn_res.0.1, 
+                 start.clus = 3, stretch = 0)
+sds <- SlingshotDataSet(sds)
+```
+```{r}
+cell_pal <-function(cell_cats, pal_fun) {
+  categories <- sort(unique(cell_cats))
+  pal <- setNames(pal_fun(length(categories)), categories)
+  pal[cell_cats]
+}
+```
+
+
+```{r}
+cell_colors <- cell_pal(WT.integrated$orig.ident, brewer_pal("qual", "Set2"))
+cell_colors_clust <- cell_pal(WT.integrated$RNA_snn_res.0.1, hue_pal())
+```
+
+```{r fig.height=4, fig.width=4}
+pdf("SlingshotDataSet_WT.integrated_spca_Cyp.pdf")
+plot(reducedDim(sds), col = cell_colors, pch = 16, cex = 0.5, asp = 1)
+lines(sds, lwd = 2, type = 'lineages', col = 'black', asp = 1)
+dev.off()
+```
+
+```{r}
+
+```
+

@@ -1,0 +1,139 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r include=FALSE}
+library(SoupX)
+library(hdf5r)
+library(DropletUtils)
+library(Seurat)
+library(cowplot)
+library(DoubletFinder)
+
+plan("multicore", workers = 10)
+options(future.globals.maxSize = 28 * 1024 ^ 3)
+set.seed(12345)
+```
+
+
+```{r}
+# Set the experiment and sample names
+experiment_name = "Atshuhiro experiment2"
+
+ids <- c("RNA-738", "RNA-739", "RNA-740", "RNA-755", "RNA-756_RNA-757")
+#ids <- c("AM-RNA-671_AM-DNA-261")
+```
+
+```{r}
+RNA_738 <-  Read10X_h5("RNA-738/outs/filtered_feature_bc_matrix.h5")
+RNA_738_Raw <-  Read10X_h5("RNA-738/outs/raw_feature_bc_matrix.h5")
+RNA_739 <-  Read10X_h5("RNA-739/outs/filtered_feature_bc_matrix.h5")
+RNA_739_Raw <-  Read10X_h5("RNA-739/outs/raw_feature_bc_matrix.h5")
+RNA_740 <-  Read10X_h5("RNA-740/outs/filtered_feature_bc_matrix.h5")
+RNA_740_Raw <-  Read10X_h5("RNA-740/outs/raw_feature_bc_matrix.h5")
+
+RNA_755 <-  Read10X_h5("RNA-755/outs/filtered_feature_bc_matrix.h5")
+RNA_755_Raw <-  Read10X_h5("RNA-755/outs/raw_feature_bc_matrix.h5")
+RNA_756_RNA_757 <-  Read10X_h5("RNA-756_RNA-757/outs/filtered_feature_bc_matrix.h5")
+RNA_756_RNA_757_Raw <-  Read10X_h5("RNA-756_RNA-757/outs/raw_feature_bc_matrix.h5")
+```
+
+```{r}
+RNA_756_RNA_757 <- RNA_756_RNA_757$`Gene Expression`
+RNA_756_RNA_757_Raw <- RNA_756_RNA_757_Raw$`Gene Expression`
+```
+
+```{r}
+RNA_738_so <- CreateSeuratObject(RNA_738)
+RNA_739_so <- CreateSeuratObject(RNA_739)
+RNA_740_so <- CreateSeuratObject(RNA_740)
+RNA_755_so <- CreateSeuratObject(RNA_755)
+RNA_756_RNA_757_so <- CreateSeuratObject(RNA_756_RNA_757)
+```
+
+
+```{r}
+RNA_738_sc = SoupChannel(RNA_738_Raw, RNA_738)
+RNA_738_so    <- SCTransform(RNA_738_so, verbose = F)
+RNA_738_so    <- RunPCA(RNA_738_so, verbose = F)
+RNA_738_so    <- RunUMAP(RNA_738_so, dims = 1:30, verbose = F)
+RNA_738_so    <- FindNeighbors(RNA_738_so, dims = 1:30, verbose = F)
+RNA_738_so    <- FindClusters(RNA_738_so, verbose = F)
+RNA_738_so_meta    <- RNA_738_so@meta.data
+RNA_738_so_umap    <- RNA_738_so@reductions$umap@cell.embeddings
+RNA_738_sc  <- setClusters(RNA_738_sc, setNames(RNA_738_so_meta$seurat_clusters, rownames(RNA_738_so_meta)))
+RNA_738_sc  <- setDR(RNA_738_sc, RNA_738_so_umap)
+
+RNA_739_sc = SoupChannel(RNA_739_Raw, RNA_739)
+RNA_739_so    <- SCTransform(RNA_739_so, verbose = F)
+RNA_739_so    <- RunPCA(RNA_739_so, verbose = F)
+RNA_739_so    <- RunUMAP(RNA_739_so, dims = 1:30, verbose = F)
+RNA_739_so    <- FindNeighbors(RNA_739_so, dims = 1:30, verbose = F)
+RNA_739_so    <- FindClusters(RNA_739_so, verbose = F)
+RNA_739_so_meta    <- RNA_739_so@meta.data
+RNA_739_so_umap    <- RNA_739_so@reductions$umap@cell.embeddings
+RNA_739_sc  <- setClusters(RNA_739_sc, setNames(RNA_739_so_meta$seurat_clusters, rownames(RNA_739_so_meta)))
+RNA_739_sc  <- setDR(RNA_739_sc, RNA_739_so_umap)
+
+RNA_740_sc = SoupChannel(RNA_740_Raw, RNA_740)
+RNA_740_so    <- SCTransform(RNA_740_so, verbose = F)
+RNA_740_so    <- RunPCA(RNA_740_so, verbose = F)
+RNA_740_so    <- RunUMAP(RNA_740_so, dims = 1:30, verbose = F)
+RNA_740_so    <- FindNeighbors(RNA_740_so, dims = 1:30, verbose = F)
+RNA_740_so    <- FindClusters(RNA_740_so, verbose = F)
+RNA_740_so_meta    <- RNA_740_so@meta.data
+RNA_740_so_umap    <- RNA_740_so@reductions$umap@cell.embeddings
+RNA_740_sc  <- setClusters(RNA_740_sc, setNames(RNA_740_so_meta$seurat_clusters, rownames(RNA_740_so_meta)))
+RNA_740_sc  <- setDR(RNA_740_sc, RNA_740_so_umap)
+
+RNA_755_sc = SoupChannel(RNA_755_Raw, RNA_755)
+RNA_755_so    <- SCTransform(RNA_755_so, verbose = F)
+RNA_755_so    <- RunPCA(RNA_755_so, verbose = F)
+RNA_755_so    <- RunUMAP(RNA_755_so, dims = 1:30, verbose = F)
+RNA_755_so    <- FindNeighbors(RNA_755_so, dims = 1:30, verbose = F)
+RNA_755_so    <- FindClusters(RNA_755_so, verbose = F)
+RNA_755_so_meta    <- RNA_755_so@meta.data
+RNA_755_so_umap    <- RNA_755_so@reductions$umap@cell.embeddings
+RNA_755_sc  <- setClusters(RNA_755_sc, setNames(RNA_755_so_meta$seurat_clusters, rownames(RNA_755_so_meta)))
+RNA_755_sc  <- setDR(RNA_755_sc, RNA_755_so_umap)
+```
+```{r}
+
+RNA_756_RNA_757_sc = SoupChannel(RNA_756_RNA_757_Raw, RNA_756_RNA_757)
+RNA_756_RNA_757_so    <- SCTransform(RNA_756_RNA_757_so, verbose = F)
+RNA_756_RNA_757_so    <- RunPCA(RNA_756_RNA_757_so, verbose = F)
+RNA_756_RNA_757_so    <- RunUMAP(RNA_756_RNA_757_so, dims = 1:30, verbose = F)
+RNA_756_RNA_757_so    <- FindNeighbors(RNA_756_RNA_757_so, dims = 1:30, verbose = F)
+RNA_756_RNA_757_so    <- FindClusters(RNA_756_RNA_757_so, verbose = F)
+RNA_756_RNA_757_so_meta    <- RNA_756_RNA_757_so@meta.data
+RNA_756_RNA_757_so_umap    <- RNA_756_RNA_757_so@reductions$umap@cell.embeddings
+RNA_756_RNA_757_sc  <- setClusters(RNA_756_RNA_757_sc, setNames(RNA_756_RNA_757_so_meta$seurat_clusters, rownames(RNA_756_RNA_757_so_meta)))
+RNA_756_RNA_757_sc  <- setDR(RNA_756_RNA_757_sc, RNA_756_RNA_757_so_umap)
+
+```
+
+```{r}
+RNA_738_sc <- autoEstCont(RNA_738_sc)
+RNA_739_sc <- autoEstCont(RNA_739_sc)
+RNA_740_sc <- autoEstCont(RNA_740_sc)
+RNA_755_sc <- autoEstCont(RNA_755_sc)
+RNA_756_RNA_757_sc <- autoEstCont(RNA_756_RNA_757_sc)
+```
+
+```{r}
+RNA_738_adj.matrix <- adjustCounts(RNA_738_sc, roundToInt = T)
+RNA_739_adj.matrix <- adjustCounts(RNA_739_sc, roundToInt = T)
+RNA_740_adj.matrix <- adjustCounts(RNA_740_sc, roundToInt = T)
+RNA_755_adj.matrix <- adjustCounts(RNA_755_sc, roundToInt = T)
+RNA_756_RNA_757_adj.matrix <- adjustCounts(RNA_756_RNA_757_sc, roundToInt = T)
+```
+```{r}
+DropletUtils:::write10xCounts("soupX_AM-RNA_738_filt", RNA_738_adj.matrix, version = "3")
+DropletUtils:::write10xCounts("soupX_AM-RNA-739_filt", RNA_739_adj.matrix, version = "3")
+DropletUtils:::write10xCounts("soupX_AM-RNA-740_filt", RNA_740_adj.matrix, version = "3")
+DropletUtils:::write10xCounts("soupX_AM-RNA-755_filt", RNA_755_adj.matrix, version = "3")
+DropletUtils:::write10xCounts("soupX_AM-RNA_756_RNA_757_filt", RNA_756_RNA_757_adj.matrix, version = "3")
+```

@@ -1,0 +1,119 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(GSVA)
+library("goSTAG")
+library(tidyverse)
+library(viridis)
+```
+
+```{r}
+clu_df <- read_csv("clu_df_heatmap.csv")
+```
+```{r}
+#separate df into list based on cluster
+gene_list <- lapply(split(clu_df[,5],clu_df$Cluster), function(x) as.vector(unlist(x)))
+geneID_list <- lapply(split(clu_df[,2],clu_df$Cluster), function(x) as.vector(unlist(x)))
+```
+```{r}
+go_terms <- loadGOTerms(species = "mouse")
+```
+```{r}
+enrichment_matrix <- performGOEnrichment( gene_list, go_terms , filter_method = "p.adjust", significance_threshold = 0.01, p.adjust_method = "BH" )
+```
+
+```{r}
+hclust_results <- performHierarchicalClustering( enrichment_matrix, distance_method = "euclidean", clustering_method = "complete" )
+
+hclust_results
+```
+```{r}
+clusters <- groupClusters( hclust_results )
+```
+```{r}
+cluster_labels <- annotateClusters( clusters )
+```
+
+```{r fig.height=8, fig.width=6}
+plotHeatmap( enrichment_matrix, hclust_results, clusters, cluster_labels, min_num_terms = 1, heatmap_colors = "extra", cluster_label_cex = 1)
+
+```
+```{r}
+library(gprofiler2)
+library(clusterProfiler)
+library(enrichplot)
+library(DOSE)
+```
+```{r}
+multi_gp1 = gost(geneID_list, multi_query = FALSE, evcodes = T, organism = "mmusculus", sources = c("GO:BP", "KEGG", "REAC", "WP"), measure_underrepresentation = F)
+```
+
+
+```{r}
+list_terms <- c("GO:0043436", "GO:0006629", "GO:0030258", "GO:0019395", "GO:0034440", "GO:0007596", "GO:0007599", "GO:0009725", "GO:0048731", "GO:0032502", "GO:0043436", "GO:0008610", "GO:0016125", "GO:0019915", "GO:0006084", "GO:0032502", "GO:0048512", "GO:0032787", "GO:0006631", "GO:0006066", "GO:0009725", "GO:0007049", "GO:0000278", "GO:0006996", "GO:0044770", "GO:0140014", "GO:0016055", "GO:0021700", "GO:0003002", "GO:0048869", "GO:0030154", "GO:0001944", "GO:0008283", "GO:0048534", "GO:0048468")
+```
+
+
+```{r}
+# modify the g:Profiler data frame
+gp_mod = multi_gp1$result[,c("query", "source", "term_id",
+                             "term_name","p_value", "query_size",
+                             "intersection_size", "term_size",
+                             "effective_domain_size", "intersection")]
+
+gp_mod$GeneRatio = paste0(gp_mod$intersection_size,  "/", gp_mod$query_size)
+
+
+gp_mod$BgRatio = paste0(gp_mod$term_size, "/", gp_mod$effective_domain_size)
+
+names(gp_mod) = c("Cluster", "Category", "ID", "Description", "p.adjust",
+                  "query_size", "Count", "term_size", "effective_domain_size",
+                  "geneID", "GeneRatio", "BgRatio")
+
+gp_mod$geneID = gsub(",", "/", gp_mod$geneID)
+
+gp_mod_f <- gp_mod %>% filter(ID %in%  list_terms)
+
+gp_mod_f$GeneRatio <- gp_mod_f$Count / gp_mod_f$term_size
+
+```
+```{r}
+# define as compareClusterResult object
+gp_mod_cluster = new("compareClusterResult", compareClusterResult = gp_mod)
+gp_mod_clusterf = new("compareClusterResult", compareClusterResult = gp_mod_f)
+# define as enrichResult object
+gp_mod_enrich  = new("enrichResult", result = gp_mod)
+```
+
+```{r}
+write.csv(gp_mod, "Gene_enrichment_HeatmapClusters_01022023.csv")
+```
+
+
+
+```{r}
+enrichplot::dotplot(gp_mod_clusterf, font.size = 6)
+```
+```{r}
+ggplot(gp_mod_f, aes(x = Cluster, y = Description, size= GeneRatio, color = -log10(p.adjust))) +
+  geom_point() +
+  labs(
+        color=expression(log10pvalue),
+        size="Gene ratio",
+        x="- log10 pvalue",
+        y= NULL,
+        title="GO Biological Process") +
+  theme_bw() +
+  scale_color_viridis(option="viridis")
+
+ggsave("go_biological_process_cluster_01022023.pdf")
+
+```
+

@@ -1,0 +1,987 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(Seurat)
+library(cowplot)
+library(hdf5r)
+library(kableExtra)
+library(patchwork)
+#library(biomaRt)
+library(limma)
+library(topGO)
+#library(org.Hs.eg.db)
+library(sva)
+library(scran)
+library(tidyverse)
+library(DoubletFinder)
+library(gprofiler2)
+library(rliger)
+library(future)
+#library(harmony)
+library(pheatmap)
+library(clustree)
+#library(venn)
+library(enrichR)
+library(rafalib)
+library(scPred)
+library(loomR)
+library(SeuratWrappers)
+#library(velocyto.R)
+library(Nebulosa)
+#library(ggalluvial)
+library(parallel)
+library(viridis)
+library(ReductionWrappers)
+library(UCell)
+library(PrettyCols)
+library(scales)
+library(scCustomize)
+library(SCpubr)
+# work in parallel
+options(mc.cores = 6)
+plan("multicore", workers = 6)
+options(future.globals.maxSize = 28 * 1024 ^ 3)
+set.seed(12345)
+setwd("/Users/magalhae/Desktop/Atshuhiro/Paper/FigureZ/")
+options = guides(color = guide_legend(override.aes = list(size=3), ncol=2))
+```
+```{r}
+s.genes <- c("Mcm5", "Pcna", "Tyms", "Fen1", "Mcm2", "Mcm4", "Rrm1", "Ung", "Gins2", "Mcm6", "Cdca7", "Dtl", "Prim1", "Uhrf1", "Cenpu", "Hells", "Rfc2", "Rpa2", "Nasp", "Rad51ap1", "Gmnn", "Wdr76", "Slbp", "Ccne2", "Ubr7", "Pold3", "Msh2", "Atad2", "Rad51", "Rrm2", "Cdc45", "Cdc6", "Exo1", "Tipin", "Dscc1", "Blm", "Casp8ap2", "Usp1", "Clspn", "Pola1", "Chaf1b", "Brip1", "E2f8")
+
+g2m.genes <- c("Hmgb2", "Cdk1", "Nusap1", "Ube2a", "Birc5", "Tpx2", "Top2a", "Ndc80", "Cks2", "Nuf2", "Cks1b", "Mki67", "Tmpo", "Cenpf", "Tacc3", "Pimreg", "Smc4", "Ccnb2", "Ckap2l", "Ckap2", "Aurkb", "Bub1", "Kif11", "Anp32e", "Tubb4b", "Gtse1", "Kif20b", "Hjurp", "Cdca3", "Jpt1", "Cdc20", "Ttk", "Cdc25c", "Kif2c", "Rangap1", "Ncapd2", "Dlgap5", "Cdca2", "Cdca8", "Ect2", "Kif23", "Hmmr", "Aurka", "Psrc1", "Anln", "Lbr", "Ckap5", "Cenpe", "Ctcf", "Nek2", "G2e3", "Gas2l3", "Cbx5", "Cenpa")
+```
+
+```{r}
+#loadWT
+load("/Users/magalhae/Desktop/Atshuhiro/Paper/FigureX/WT_atlas/Seurat_workflow_WT_19Feb2023.RData")
+
+#load Perturb
+load("/Users/magalhae/Desktop/Atshuhiro/NEW_WORK/Sets_PerburbSet_WT_ref_181112022.RData")
+rm(WT_ref, sds, PerburbSet_t, PerburbSet_Meta, p2, p1, meta_feat, markers_genes)
+
+
+grna_genes <- c("2010315B03Rik", "Apobec1", "Atf5", "Atoh8", "Bcl6", "Calcoco1", "Cebpa", "Cebpb", "Chd9", "Chuk", "Crebl2", "Crebrf", "Creg1", "Crem", "Csrp3", "Dbp", "Esr1", "Gadd45g", "Gm14403", "Hdac11", "Hes6", "Hopx", "Hspa1a", "Id3", "Irf5", "Irf6", "Irf7", "Klf9", "Lpin1", "Macrod1", "Mafb", "Mbd1", "Nfix", "Nr0b2", "Nr1d1", "Nr1d2", "Nr1h4", "Nr1i3", "Parp14", "Parp3", "Parp6", "Parp9", "Pdcd4", "Pparg", "Prkaa2", "Prox1", "Rbl2", "Rorc", "Sat1", "Trip4", "Tsc22d3", "Ube2q2", "Xbp1", "Zbtb16", "Zbtb20", "Zfp809", "Zfp874a", "Zfp970", "Zhx2", "Zhx3", "Znfx1")
+
+
+PerburbSet@meta.data <- PerburbSet@meta.data %>% mutate(Pertub_Clusters = ifelse(type_cell == "NT", "NT", metadata$Pertub_Clusters))
+
+
+PerburbSet <- SetIdent(PerburbSet, value = "Pertub_Clusters")
+```
+```{r}
+p <- SCpubr::do_ViolinPlot(sample = PerburbSet, group.by =  "RNA_snn_res.1.5", features = "Afp") & theme(aspect.ratio = 1/3)
+p
+SCpubr::save_Plot(plot = p, file_name = "PerburbSet_do_ViolinPlot_Afp" )
+```
+```{r}
+p <- SCpubr::do_ViolinPlot(sample = PerburbSet, group.by =  "RNA_snn_res.1.5", features = "Igf2") & theme(aspect.ratio = 1/3)
+p
+SCpubr::save_Plot(plot = p, file_name = "PerburbSet_do_ViolinPlot_Igf2" )
+```
+```{r}
+p1 <- SCpubr::do_DimPlot(sample = PerburbSet, plot.axes = TRUE, reduction = "phate_onUMAP10", shuffle = TRUE, group.by =  "Pertub_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T) & theme(aspect.ratio = 1)
+p1
+SCpubr::save_Plot(plot = p1, file_name = "Perturb_phateUMAP10_22May" )
+```
+```{r fig.width=12}
+# Define list of genes.
+grna_genes <- c("2010315B03Rik", "Apobec1", "Atf5", "Atoh8", "Bcl6", "Calcoco1", "Cebpa", "Cebpb", "Chd9", "Chuk", "Crebl2", "Crebrf", "Creg1", "Crem", "Csrp3", "Dbp", "Esr1", "Gadd45g", "Gm14403", "Hdac11", "Hes6", "Hopx", "Hspa1a", "Id3", "Irf5", "Irf6", "Irf7", "Klf9", "Lpin1", "Macrod1", "Mafb", "Mbd1", "Nfix", "Nr0b2", "Nr1d1", "Nr1d2", "Nr1h4", "Nr1i3", "Parp14", "Parp3", "Parp6", "Parp9", "Pdcd4", "Pparg", "Prkaa2", "Prox1", "Rbl2", "Rorc", "Sat1", "Trip4", "Tsc22d3", "Ube2q2", "Xbp1", "Zbtb16", "Zbtb20", "Zfp809", "Zfp874a", "Zfp970", "Zhx2", "Zhx3", "Znfx1")
+
+neg_cells <- c("AAAGAACGTGTGCTTA-1", "AACAACCGTTACGGAG-1", "AACCACAGTTTGGGTT-1", "AACCCAATCGAACGCC-1", "AAGCGTTTCTACGGGC-1", "AATCACGTCTTCCTAA-1", "AATGAAGCAGATCCAT-1", "ACAACCAAGAGAGCCT-1", "ACACCAATCTGGGTCG-1", "ACCATTTTCGTGTGAT-1", "ACGCACGCATGAGGGT-1", "ACTACGATCAACGTGT-1", "ACTGCAATCACAGTGT-1", "ACTTTCAAGGAAAGAC-1", "ACTTTCAGTGATTAGA-1", "AGATGCTCATCGTTCC-1", "AGGACGACACCAGTTA-1", "AGGTCATAGTGGCAGT-1", "AGTAGTCCAGCTCTGG-1", "AGTCTCCTCATTTGTC-1", "AGTTAGCTCTTTGCAT-1", "ATCATTCAGTATCCTG-1", "ATTCATCCAACTTCTT-1", "ATTCTTGAGATGGCGT-1", "CAACAACTCCATGAGT-1", "CAACAGTGTTATTCCT-1", "CACCAAACACATGACT-1", "CACTGTCTCATCCTAT-1", "CAGTGCGCAGCGCGTT-1", "CAGTTAGCATAGATGA-1", "CATCCGTAGTAACGTA-1", "CATGAGTAGTTTCAGC-1", "CATGGATGTAACCCTA-1", "CCAATGATCACTGTCC-1", "CCACGAGCACCGTGGT-1", "CCACGTTGTATGCGTT-1", "CCGTAGGTCTGCACCT-1", "CCTTCAGTCGCTACGG-1", "CGACAGCCACACTGGC-1", "CGAGTGCCAGTATACC-1", "CGATGGCGTATCCCTC-1", "CGGACACTCTGAGGCC-1", "CGTCCATAGGTCACCC-1", "CTAACCCGTACACGTT-1", "CTACCCATCCTTCTTC-1", "CTACCCATCTGCTGAA-1", "CTCATGCGTAGTATAG-1", "CTCCACAAGATAGGGA-1", "CTCCGATGTATCCCTC-1", "CTCCGATGTCTGTGAT-1", "CTTCGGTTCAACTGAC-1", "CTTCTAATCAATCCAG-1", "CTTTCGGGTCCAAAGG-1", "GAAATGATCTGTCTCG-1", "GAGACTTAGTCGCTAT-1", "GAGTTGTTCGCATAGT-1", "GCAACCGTCATAGAGA-1", "GCCGTGAGTGACCGTC-1", "GCGATCGCAAATCCCA-1", "GCGGAAACATACATCG-1", "GCTGCAGAGTCTTCGA-1", "GGCAGTCAGTAGTCAA-1", "GGCAGTCCATGCACTA-1", "GGCTTGGTCCTAGCTC-1", "GGGAGTATCTCGCGTT-1", "GGGCCATAGAAAGCGA-1", "GGGCGTTAGGCCCACT-1", "GGGCGTTCATGACTTG-1", "GGTTAACTCTATGTGG-1", "GTACAACGTGAGGCAT-1", "GTCCACTTCTCGTGGG-1", "GTCTGTCGTTGGACCC-1", "GTGACGCAGGGATGTC-1", "GTGGAAGTCACCATAG-1", "GTGTCCTCACGCCACA-1", "GTTACGAAGCCTCGTG-1", "GTTGAACAGAGCTTTC-1", "GTTGCGGAGCATTTGC-1", "GTTGTGACATGGCACC-1", "TAACGACTCTACTGAG-1", "TAAGTCGAGCTGCCTG-1", "TACCTCGCATGAAGCG-1", "TATCTTGAGCGCCGTT-1", "TCAATTCTCCTGGGAC-1", "TCAGGTAGTGAGATTA-1", "TCGGGTGGTAGATCCT-1", "TCGGGTGTCTTACACT-1", "TGAATGCGTCTTAGTG-1", "TGCAGTAAGGGAGGAC-1", "TGCTGAAAGCGAAACC-1", "TGGTACATCTCACGAA-1", "TGGTGATGTTCGGCTG-1", "TGGTTAGCAGAGGCAT-1", "TGTAGACTCACAAGGG-1", "TGTCCCAAGGAGAGGC-1", "TGTTACTTCTTAGGAC-1", "TTACAGGTCTCGAACA-1", "TTAGGCAAGCACGGAT-1", "TTAGGGTTCTAGTTCT-1", "TTCAATCTCGTTGCCT-1", "TTCATTGTCGGAGATG-1", "TTCGCTGAGTTCGGTT-1", "TTCGCTGTCTGTGCTC-1", "TTCGGTCTCTCCGAAA-1", "TTGACCCGTACATACC-1", "TTGATGGAGTAACCGG-1")
+
+PerburbSet = ScaleData(PerburbSet, verbose = F, feature = grna_genes)
+# Default parameters.
+p1 <- SCpubr::do_ExpressionHeatmap(PerburbSet, group.by =  "RNA_snn_res.1.5",
+                                  features = grna_genes, min.cutoff = 0.5, max.cutoff = 2,
+                                  viridis_color_map = "G", viridis_direction = -1)
+p1
+
+SCpubr::save_Plot(plot = p1, file_name = "Perturb_Heatmap_grnaGenes" )
+```
+
+```{r}
+Idents(PerburbSet) <- "Pertub_Clusters"
+de_genes_MAST <- tibble::tibble(Seurat::FindAllMarkers(PerburbSet, logfc.threshold = 0.25, test.use = "MAST", 
+    min.diff.pct = 0.2, only.pos = T, max.cells.per.ident = 500, assay = "RNA"))
+top25_de_genes_MAST <- de_genes_MAST %>% group_by(cluster) %>% top_n(-25, p_val_adj)
+write.csv(top25_de_genes_MAST , "PerburbSet_top25_de_genes_MAST_on_Pertub_Clusters.csv")
+```
+
+```{r}
+de_genes_MAST_gRNA <- tibble::tibble(Seurat::FindAllMarkers(PerburbSet, logfc.threshold = 0.2, test.use = "wilcox", only.pos = T, max.cells.per.ident = 500, assay = "Crispr"))
+top25_de_genes_MAST_gRNA <- de_genes_MAST_gRNA %>% group_by(cluster) %>% top_n(-25, p_val_adj)
+write.csv(top25_de_genes_MAST_gRNA , "PerburbSet_top25_de_gRNA_MAST_on_Pertub_Clusters.csv")
+```
+
+
+
+```{r}
+merged_object <- merge(WT.ref, y = PerburbSet, project = "WT_PerturbIntegration")
+```
+
+```{r}
+#Integration based on most variable genes
+merged_object_FMNN <- NormalizeData(merged_object)
+merged_object_FMNN <- FindVariableFeatures(merged_object_FMNN, selection.method = "vst", verbose = F, nfeatures = 4000)
+
+merged_object_v <- VariableFeatures(merged_object_FMNN)
+merged_object_v <- merged_object_v[!merged_object_v %in% s.genes]
+merged_object_v <- merged_object_v[!merged_object_v %in% g2m.genes]
+merged_object_FMNN@assays[["RNA"]]@var.features <- merged_object_v
+
+merged_object_FMNN <- RunFastMNN(object.list = SplitObject(DietSeurat(merged_object_FMNN), split.by = "orig.ident"),features = merged_object_v)
+
+merged_object_FMNN <- RunUMAP(merged_object_FMNN, reduction = "mnn", dims = 1:30, n.components = 2, n.neighbors = 30, 
+                              n.epochs = 200, min.dist = 0.3, learning.rate = 1, spread = 1)
+
+merged_object_FMNN <- RunTSNE(merged_object_FMNN, reduction = "mnn", dims = 1:30, perplexity = 30, max_iter = 1000,
+    theta = 0.5, eta = 200, num_threads = 6)
+
+
+merged_object_FMNN <- RunUMAP(merged_object_FMNN, reduction.name = "UMAP10_on_PCA", reduction = "mnn",
+                    dims = 1:30, n.components = 10, n.neighbors = 30, n.epochs = 200, min.dist = 0.3,
+                    learning.rate = 1, spread = 1)
+
+```
+
+
+```{r}
+merged_object_FMNN@meta.data <- merged_object_FMNN@meta.data %>% mutate(Joint_Clusters = ifelse(is.na(CellType), merged_object_FMNN@meta.data$Pertub_Clusters, merged_object_FMNN@meta.data$CellType))
+
+merged_object_FMNN2@meta.data <- merged_object_FMNN2@meta.data %>% mutate(Joint_Clusters = ifelse(is.na(CellType), merged_object_FMNN2@meta.data$Pertub_Clusters, merged_object_FMNN2@meta.data$CellType))
+```
+
+
+
+```{r}
+merged_object_FMNN2 <- NormalizeData(merged_object)
+
+merged_object_FMNN2@assays[["RNA"]]@var.features <- WT.ref@assays[["mnn.reconstructed"]]@var.features
+
+merged_object_FMNN2 <- RunFastMNN(object.list = SplitObject(DietSeurat(merged_object_FMNN2), split.by = "orig.ident"),features = WT.ref@assays[["mnn.reconstructed"]]@var.features)
+
+merged_object_FMNN2 <- RunUMAP(merged_object_FMNN2, reduction = "mnn", dims = 1:30, n.components = 2, n.neighbors = 30, 
+                              n.epochs = 200, min.dist = 0.3, learning.rate = 1, spread = 1)
+
+merged_object_FMNN2 <- RunTSNE(merged_object_FMNN2, reduction = "mnn", dims = 1:30, perplexity = 30, max_iter = 1000,
+    theta = 0.5, eta = 200, num_threads = 6)
+
+
+merged_object_FMNN2 <- RunUMAP(merged_object_FMNN2, reduction.name = "UMAP10_on_PCA", reduction = "mnn",
+                    dims = 1:30, n.components = 10, n.neighbors = 30, n.epochs = 200, min.dist = 0.3,
+                    learning.rate = 1, spread = 1)
+```
+```{r fig.height=12, fig.width=12}
+# Custom aggregated values.
+p <- SCpubr::do_ExpressionHeatmap(sample = merged_object_FMNN,
+                                  features = grna_genes,
+                                  group.by = "Joint_Clusters",
+                                  column_names_rot = 90,
+                                   min.cutoff = 0.25, max.cutoff = 2,
+                                  viridis_color_map = "G", viridis_direction = -1)
+p
+
+SCpubr::save_Plot(plot = p, file_name = "Perturb_Heatmap_grnaGenes_11July" )
+
+```
+```{r fig.height=12, fig.width=12}
+# Custom aggregated values.
+p <- SCpubr::do_ExpressionHeatmap(sample = merged_object_FMNN,
+                                  features = list_sig,
+                                  group.by = "Joint_Clusters",
+                                  column_names_rot = 90,
+                                   min.cutoff = 0.5, max.cutoff = 2,
+                                  viridis_color_map = "G", viridis_direction = -1)
+p
+
+SCpubr::save_Plot(plot = p, file_name = "Perturb_Heatmap_grnaGenes_22May_small" )
+
+```
+```{r}
+lr_score <- read_csv('/Users/magalhae/Desktop/Atshuhiro/Paper/FigureZ/LR/lr_score_Sample756.csv')
+lr_score_pval <- read_csv('/Users/magalhae/Desktop/Atshuhiro/Paper/FigureZ/LR/lr_score_pval_Sample756.csv')
+
+lr_result <- list(as.list(lr_score), as.list(lr_score_pval))
+```
+```{r}
+network <- decoupleR::get_dorothea(organism = "mouse",
+                                   levels = c("A", "B", "C"))
+```
+```{r}
+network_gRNA <- network[network$source %in% grna_genes,]
+write_csv(network_gRNA, "network_gRNA.csv")
+```
+```{r}
+WT.ref_SCENIC <- read_csv("/Users/magalhae/Desktop/Atshuhiro/Paper/FigureX/WT_atlas/SCENIC/WT.ref_adj_.csv")
+```
+```{r}
+WT.ref_SCENIC_gRNA <- WT.ref_SCENIC[WT.ref_SCENIC$TF %in% grna_genes,]
+write_csv(WT.ref_SCENIC_gRNA, "WT.ref_SCENIC_gRNA.csv")
+```
+```{r}
+quantile(WT.ref_SCENIC$importance, probs = c(.75, .90, .99))
+```
+
+```{r}
+WT.ref_SCENIC_gRNA_075 <- WT.ref_SCENIC[WT.ref_SCENIC$importance >= quantile(WT.ref_SCENIC$importance, probs = .75),]
+WT.ref_SCENIC_gRNA_090 <- WT.ref_SCENIC[WT.ref_SCENIC$importance >= quantile(WT.ref_SCENIC$importance, probs = .90),]
+WT.ref_SCENIC_gRNA_099 <- WT.ref_SCENIC[WT.ref_SCENIC$importance >= quantile(WT.ref_SCENIC$importance, probs = .99),]
+
+WT.ref_SCENIC_gRNA_075 <- WT.ref_SCENIC_gRNA_075[WT.ref_SCENIC_gRNA_075$TF %in%  grna_genes,]
+WT.ref_SCENIC_gRNA_090 <- WT.ref_SCENIC_gRNA_090[WT.ref_SCENIC_gRNA_090$TF %in%  grna_genes,]
+WT.ref_SCENIC_gRNA_099 <- WT.ref_SCENIC_gRNA_099[WT.ref_SCENIC_gRNA_099$TF %in%  grna_genes,]
+```
+```{r}
+write_csv(WT.ref_SCENIC_gRNA_075, "WT.ref_SCENIC_gRNA_075.csv")
+write_csv(WT.ref_SCENIC_gRNA_090, "WT.ref_SCENIC_gRNA_090.csv")
+write_csv(WT.ref_SCENIC_gRNA_099, "WT.ref_SCENIC_gRNA_099.csv")
+```
+
+```{r}
+LR_scoreNet <- read_csv("/Users/magalhae/Desktop/lr_score_Sample756_edge.csv")
+df_LR <- as.matrix(LR_scoreNet[,1:2])
+```
+
+```{r}
+LR_scoreNetg <- graph_from_edgelist(df_LR, directed = TRUE)
+```
+```{r fig.height=12, fig.width=12}
+layout <- layout_with_lgl(LR_scoreNetg)
+plot(LR_scoreNetg, layout = layout, vertex.size = 3, vertex.label = ifelse(V(LR_scoreNetg)$name %in% grna_genes, V(LR_scoreNetg)$name, NA))
+```
+
+
+
+
+
+```{r fig.height=6, fig.width=6}
+SCpubr::do_DimPlot(sample = merged_object_FMNN, plot.axes = TRUE, reduction = "umap", shuffle = TRUE, group.by =  "Joint_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T) & theme(aspect.ratio = 1)
+ggsave("merged_object_FMNN_umap_Joint_Clusters.pdf")
+```
+
+
+```{r fig.height=12, fig.width=12}
+plot_grid(ncol = 2, nrow = 2,  align = "hv",
+          SCpubr::do_DimPlot(sample = merged_object_FMNN, plot.axes = TRUE, reduction = "mnn", shuffle = TRUE, group.by =  "CellType", font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN, plot.axes = TRUE, reduction = "umap", shuffle = TRUE, group.by =  "CellType" , font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN, plot.axes = TRUE, reduction = "tsne", shuffle = TRUE, group.by =  "CellType" , font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN, plot.axes = TRUE, reduction = "UMAP10_on_PCA", shuffle = TRUE, group.by =  "CellType" , font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1)
+)
+
+#ggsave("do_DimPlot_WT_ref-filtered.pdf")
+plot_grid(ncol = 2, nrow = 2,  align = "hv",
+          SCpubr::do_DimPlot(sample = merged_object_FMNN, plot.axes = TRUE, reduction = "mnn", shuffle = TRUE, group.by =  "Pertub_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN, plot.axes = TRUE, reduction = "umap", shuffle = TRUE, group.by =  "Pertub_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN, plot.axes = TRUE, reduction = "tsne", shuffle = TRUE, group.by =  "Pertub_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN, plot.axes = TRUE, reduction = "UMAP10_on_PCA", shuffle = TRUE, group.by =  "Pertub_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1)
+)
+```
+
+```{r fig.height=12, fig.width=12}
+plot_grid(ncol = 2, nrow = 2,  align = "hv",
+          SCpubr::do_DimPlot(sample = merged_object_FMNN2, plot.axes = TRUE, reduction = "mnn", shuffle = TRUE, group.by =  "CellType", font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN2, plot.axes = TRUE, reduction = "umap", shuffle = TRUE, group.by =  "CellType" , font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN2, plot.axes = TRUE, reduction = "tsne", shuffle = TRUE, group.by =  "CellType" , font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN2, plot.axes = TRUE, reduction = "UMAP10_on_PCA", shuffle = TRUE, group.by =  "CellType" , font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1)
+)
+
+#ggsave("do_DimPlot_WT_ref-filtered.pdf")
+plot_grid(ncol = 2, nrow = 2,  align = "hv",
+          SCpubr::do_DimPlot(sample = merged_object_FMNN2, plot.axes = TRUE, reduction = "mnn", shuffle = TRUE, group.by =  "Pertub_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN2, plot.axes = TRUE, reduction = "umap", shuffle = TRUE, group.by =  "Pertub_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN2, plot.axes = TRUE, reduction = "tsne", shuffle = TRUE, group.by =  "Pertub_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1),
+          SCpubr::do_DimPlot(sample = merged_object_FMNN2, plot.axes = TRUE, reduction = "UMAP10_on_PCA", shuffle = TRUE, group.by =  "Pertub_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2) & theme(aspect.ratio = 1)
+)
+
+#ggsave("do_DimPlot_WT_ref-filtered_orig.pdf")
+```
+```{r fig.height=12, fig.width=12}
+
+# Default values.
+p <- SCpubr::do_CorrelationPlot(sample = merged_object_FMNN,
+                                assay = 'mnn.reconstructed',
+                                group.by = 'Joint_Clusters',
+                                cell_size = 5, column_names_rot = 90, cluster_rows = T)
+p
+
+```
+```{r fig.height=10, fig.width=10}
+p
+```
+
+```{r}
+ClusterSig <- subset(x = merged_object_FMNN, idents = c('E15.5_1','E15.5_2', 'P1', 'P10', 'P10_2', 'M1', 'M2', 'M3', 'M4', '10', '15', '3', '11', '14', '6', '12', 'NT', '7'))
+```
+
+```{r fig.height=3, fig.width=3}
+SCpubr::do_DimPlot(sample = merged_object_FMNN, plot.axes = TRUE, reduction = "umap", shuffle = TRUE, group.by =  "Joint_Clusters", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T, idents.keep = c('E15.5_1','E15.5_2', 'P1', 'P10', 'P10_2', 'M1', 'M2', 'M3', 'M4', '10', '15', '3', '11', '14', '6', '12', 'NT', '7')) & theme(aspect.ratio = 1)
+
+ggsave("merged_object_FMNN_umap_Joint_Clusters_onlysomeloa_.pdf")
+```
+
+```{r}
+SCpubr::do_FeaturePlot(sample = PerburbSet, reduction = "phate_onUMAP10", assay = "SCT", slot = "data", features = "Nr1i3", raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T) & theme(aspect.ratio = 1, plot.title = element_text(size=6)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+#ggsave("FeaturePlot_Nr1i3_Perturb.ref.pdf")
+#SCpubr::do_FeaturePlot(sample = WT.ref, reduction = "umap", features = "Mup3", raster = F, legend.length = 5, font.size = 6, #legend.width = 0.5, order = T) & theme(aspect.ratio = 1)
+#ggsave("FeaturePlot_Mup3_WT.ref.pdf")
+```
+
+
+
+```{r fig.height=6, fig.width=6}
+
+# Default values.
+pC <- SCpubr::do_CorrelationPlot(sample = ClusterSig,
+                                assay = 'mnn.reconstructed',
+                                group.by = 'Joint_Clusters',
+                                cell_size = 5, column_names_rot = 90)
+pC
+```
+
+```{r}
+markers <- list()
+
+markers$MUP <- c("Mup21", "Mup9", "Mup17", "Mup18", "Mup20", "Mup3")
+
+markers$Complement_cascade <- c("Serpina3k", "Serpina3m", "Serpina12", "Serpina3n", "Serpina1e", "Serping1", "Serpina1c", "C6", "C9", "C4b", "C4a", "C8a", "C8g", "C1rb", "C1ra", "F9", "F7")
+markers$Glucose_Metabolism <- c("Aldob", "Fbp1", "Pck1", "G6pc", "Pdk2", "Suclg2", "Prps1")
+
+markers$Drug_Metabolism<- c("Pon1", "Ephx1", "Ephx2", "Gpx1", "Nat2", "Mgst1", "Blvrb", "Mgst1")
+
+
+markers$Fat_metabolism <- c("Acsm5", "Acsm1", "Acsm3", "Acss3", "Acss2", "Acsf2", "Gpd1", "Gpd2", "Acox1", "Acox3", "Bdh2", "Ehhadh", "Acot12", "Acadsb", "Acad8", "Acad11", "Acaa1b", "Acaa1a", "Gcdh", "Eci2", "Decr2", "Cpt1a", "Crot")
+
+markers$AD_function_Cyp <- c("Cyp2c55", "Cyp2c29", "Cyp2c38", "Cyp2c54", "Cyp4a12b", "Cyp4f14", "Cyp2c50", "Cyp7b1", "Cyp4a32", "Cyp2e1", "Cyp4a12a", "Cyp4a10", "Cyp1a2", "Cyp3a25", "Cyp3a59", "Cyp4a14", "Cyp2j5", "Cyp2f2")
+
+markers$AD_function_full <- c("Cyp2c55", "Cyp2c29", "Cyp2c38", "Cyp2c54", "Cyp4a12b", "Cyp4f14", "Cyp2c50", "Cyp7b1", "Cyp4a32", "Cyp2e1", "Cyp4a12a", "Cyp4a10", "Cyp1a2", "Cyp3a25", "Cyp3a59", "Cyp4a14", "Cyp2j5", "Cyp2f2", "Cyp3a11", "Cyp2u1", "Cyp2d40", "Cyp2d9", "Cyp2c37", "Cyp27a1", "Cyp2a5", "Cyp8b1", "Cyp2c67", "Cyp3a44", "Cyp7a1", "Cyp4v3", "Cyp3a13", "Cyp2a12", "Cyp2c70", "Cyp2r1", "Cyp2j6", "Cyp2d11", "Cyp2d10", "Cyp4a31", "Cyp2a4", "Cyp4f15", "Cyp2c69", "Cyp4f13", "Cyp2c40", "Cyp2d22", "Cyp2c23", "Cyp2d26", "Ugt2a3", "Ugt2b1", "Ugt3a2", "Ugt1a1", "Ugt2b37", "Ugt2b5", "Ugt1a9", "Ugt3a1", "Ugt1a5", "Ugt2b36", "Ugt1a2", "Ugt1a6a", "Ugt2b35", "Ugt1a6b", "Adh4", "Adh1", "Aldh1a1", "Aldh1a7", "Aldh1l1", "Aldh2", "Aldh6a1", "Aldh8a1", "Fmo2", "Fmo5", "Ces3a", "Ces1f", "Ces1b", "Ces1c", "Ces2c", "Ces2g", "Ces2e", "Ces1e", "Ces2a", "Ces1g", "Ces1d", "Gsta2", "Gsta1", "Gstk1", "Gstm2", "Gstp1", "Gstp2", "Gsta3", "Gstm6", "Gstm3", "Sult5a1", "Sult1b1", "Abcc3", "Abcg5", "Abcg8", "Abcd3", "Abcb11", "Abca8a", "Abcb4", "Abca6", "Abca2", "Abcb6", "Sult5a1", "Sult1b1", "Sult1d1", "Slc22a7", "Slc22a30", "Slc10a2", "Slco1a4", "Slc22a1", "Slco1a1", "Slc1a2", "Slc41a2", "Slco1b2", "Slc17a4", "Slc17a2", "Slc25a30", "Slc25a47", "Slc17a1", "Slc27a5", "Slc10a1", "Slc6a9", "Slc3a1", "Slc25a25", "Slc22a5", "Slc25a16", "Slc16a10", "Slc29a1", "Slc46a3", "Slc30a10", "Slc25a45", "Slc4a4", "Slc38a3", "Slc25a22", "Slc38a4", "Slc7a2", "Slc48a1", "Slc25a15", "Slc17a5", "Slc27a2", "Slc6a12", "Slc10a5", "Slc25a20", "Apol9b", "Apol9a", "Apoa4", "Apoa5", "Apoc3", "Apon", "Apol7a", "Apoc1", "Apoe", "Apoc4", "Hsd17b6", "Hsd11b1", "Hsd3b2", "Hsd3b3", "Hsd3b7", "Hsd17b13", "Hsd17b4")
+
+markers$Genes_Emb <- c("Afp", "H19", "Igf2", "Dlk1", "Gpc3", "Cdkn1c", "Cited1", "Rbp1", "Zfp385a", "Cdk1", "Pbx2", "Zfp395", "Foxp4", "Uhrf1", "Dnmt1", "Zbtb12", "Maff", "Sox13", "Foxm1", "Zfp618", "Hells", "Sall4", "E2f1", "Tead2", "Peg3", "Sox12")
+```
+```{r}
+
+
+PerburbSet <- AddModuleScore_UCell(PerburbSet, features = markers, assay = "RNA",
+  slot = "data")
+signature.names <- paste0(names(markers), "_UCell")
+```
+
+
+
+```{r}
+p <- SCpubr::do_ViolinPlot(sample = PerburbSet, group.by =  "Pertub_Clusters", features = "AD_function_full_UCell") & theme(aspect.ratio = 1/3)
+p
+#SCpubr::save_Plot(plot = p, file_name = "PerburbSet_do_ViolinPlot_AD_function_full" )
+```
+```{r}
+p <- SCpubr::do_ViolinPlot(sample = PerburbSet, group.by =  "Pertub_Clusters", features = "AD_function_Cyp_UCell") & theme(aspect.ratio = 1/3)
+p
+SCpubr::save_Plot(plot = p, file_name = "PerburbSet_do_ViolinPlot_AD_function_cyp" )
+```
+```{r fig.height=6, fig.width=5}
+plot_grid(ncol = 1, nrow = 3,  align = "hv",
+ SCpubr::do_ViolinPlot(sample = PerburbSet, group.by =  "Pertub_Clusters", features = "Genes_Emb_UCell") & theme(aspect.ratio = 1/3),
+SCpubr::do_ViolinPlot(sample = PerburbSet, group.by =  "Pertub_Clusters", features = "Afp") & theme(aspect.ratio = 1/3),
+#SCpubr::do_ViolinPlot(sample = PerburbSet, group.by =  "Pertub_Clusters", features = "Ig2") & theme(aspect.ratio = 1/3),
+SCpubr::do_ViolinPlot(sample = PerburbSet, group.by =  "Pertub_Clusters", features = "H19") & theme(aspect.ratio = 1/3)
+)
+
+ggsave("PerburbSet_do_ViolinPlot_Embrio.pdf")
+
+#SCpubr::save_Plot(plot = p, file_name = "PerburbSet_do_ViolinPlot_Embrio" )
+```
+```{r}
+
+```
+
+```{r}
+SCpubr::do_FeaturePlot(sample = PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = c("nCount_sgRNA", "nFeature_sgRNA"), ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis_color_map = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("do_FeaturePlot_PerburbSet_nCount_sgRNA_nFeature_sgRNA.pdf")
+```
+
+
+
+```{r fig.height=12, fig.width=12}
+SCpubr::do_FeaturePlot(sample = PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = signature.names, ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis_color_map = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("do_FeaturePlot_PerburbSet_signature.names.pdf")
+```
+```{r fig.height=12, fig.width=12}
+SCpubr::do_FeaturePlot(sample = PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = c("Afp", "Igf2", "H19", "Gpc3"), ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis_color_map = "G") & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("do_FeaturePlot_PerburbSet_embrioGenes.pdf")
+```
+
+```{r fig.height=8, fig.width=8}
+SCpubr::do_FeaturePlot(sample = PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = c("Cebpa"), ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis_color_map = "G", assay = "SCT", slot = "scale.data") & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("do_FeaturePlot_PerburbSet_Cebpa.pdf")
+```
+
+```{r fig.height=3, fig.width=3}
+SCpubr::do_FeaturePlot(sample = PerburbSet_t, reduction = "phate_onUMAP10", dims = 1:2, features = c("Nfix"), ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis_color_map = "G", assay = "SCT", slot = "scale.data") & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("do_FeaturePlot_PerburbSet_Nfix.pdf")
+```
+
+```{r fig.height=5, fig.width=5}
+SCpubr::do_FeaturePlot(sample = PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = c("Afp", "Igf2", "H19", "Gpc3", "Nr1i3", "Cyp2c29", "Cyp3a11"), ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis_color_map = "G", assay = "SCT", slot = "scale.data") & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("do_FeaturePlot_PerburbSet_Nr1i3_Afp.pdf")
+```
+
+SCpubr::do_DimPlot(sample = PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, group.by = "type_cell", raster = F, font.size = 6, order = T) & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+
+
+```{r}
+genes <- list("Embrionic" = c("Six5", "Meis1", "Foxp4", "Dnmt1", "Top2a", "Uhrf1", "E2f1", "Foxm1", "Cdk1", "Cdkn3", "Igf2", "H19", "Slc1a4", "Slc44a3", "Cyp4f16", "Cdkn1c", "Mycn", "Slc2a1", "Slc36a2", "Igsf1", "Dlk1", "Cited1", "Foxj1", "Maff", "E2f2", "Sox13", "Sall4", "Afp", "Klf7", "Klf1", "Gpc3", "Myc", "Sox12", "Pbx2", "Cdk4", "Dnmt3a", "Id1", "Arid3b", "Serpina6", "Mt2", "Meg3", "Rian", "Bex1", "Scd2", "Bex2", "Bex4", "Bex3", "Grb10", "Tceal9", "Spink1", "Peg3", "Pde4d", "Psat1", "Kcnq1ot1", "Airn", "Gsn", "Phgdh", "Psph", "Robo1"),
+              "Cypgenes" = c("Cyp1a1", "Cyp1a2", "Cyp21a1", "Cyp2a12", "Cyp2a22", "Cyp2a4", "Cyp2a5", "Cyp2b10", "Cyp2b9", "Cyp2c29", "Cyp2c37", "Cyp2c40", "Cyp2c50", "Cyp2c55", "Cyp2c65", "Cyp2c68", "Cyp2d10", "Cyp2d26", "Cyp2d9", "Cyp2j5", "Cyp2s1", "Cyp3a11", "Cyp3a25", "Cyp4a10", "Cyp4a12a", "Cyp4a12b", "Cyp4a31", "Cyp4b1", "Cyp7a1", "Cyp8b1")
+             )
+```
+
+
+```{r}
+Embrionic_rank <- lr_score[, which((names(lr_score) %in% genes[["Embrionic"]])==TRUE | names(lr_score) == 'Perturbedgene')]
+Cyp_rank <- lr_score[, which((names(lr_score) %in% genes[["Cypgenes"]])==TRUE | names(lr_score) == 'Perturbedgene')]
+
+Embrionic_rank$Score <- rowSums(Embrionic_rank[2:24])
+Cyp_rank$Score <- rowSums(Cyp_rank[2:31])
+
+Embrionic_rank <- Embrionic_rank[order(Embrionic_rank$Score),]
+Cyp_rank <- Cyp_rank[order(-Cyp_rank$Score),]
+
+Embrionic_rank$rank <- 1:nrow(Embrionic_rank)
+Cyp_rank$rank <- 1:nrow(Cyp_rank)
+
+```
+
+```{r}
+Embrionic_graph <- ggplot(Embrionic_rank, aes(x = rank, y = Score)) +
+  geom_point() +
+  theme_classic() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    aspect.ratio = 1)
+  
+Embrionic_graph
+
+Cyp_graph <- ggplot(Cyp_rank, aes(x = rank, y = Score)) +
+  geom_point() +
+  theme_classic() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+  aspect.ratio = 1)
+Cyp_graph
+```
+
+
+
+```{r}
+PerburbSet$type_cell <- ifelse(test = colnames(PerburbSet) %in% neg_cells, yes = "NT", no = "Perturb")
+```
+
+```{r fig.height=4, fig.width=4}
+p1 <- SCpubr::do_DimPlot(sample = PerburbSet, plot.axes = TRUE, reduction = "phate_onUMAP10", shuffle = TRUE, group.by =  "type_cell", font.size = 6, legend.position = "none", raster = F, border.size = 2, label = T, repel = T) & theme(aspect.ratio = 1)
+
+p1
+#SCpubr::save_Plot(plot = p1, file_name = "PerburbSet_phate_onUMAP10_type_cell")
+
+```
+```{r}
+Idents(PerburbSet) <- "gene"
+```
+
+```{r}
+cells.use <- WhichCells(PerburbSet, ident = NULL)
+```
+
+
+
+```{r}
+ctrl_cells <- PerburbSet %>%
+  subset(type_cell == "NT")
+
+PerburbSet_f <- PerburbSet[,colnames(PerburbSet) %in% cells.use | colnames(PerburbSet) %in% colnames(ctrl_cells)]
+
+Idents(PerburbSet_f) <- "type_cell"
+
+stim_de <- PerburbSet_f %>% 
+  FoldChange(
+  ident.1 = "NT",
+  ident.2 = "Perturbed",
+  group.by = NULL,
+  subset.ident = NULL,
+  assay = "SCT",
+  slot = "data",
+  reduction = NULL,
+  features = grna_genes,
+  pseudocount.use = NULL,
+  mean.fxn = NULL,
+  base = 2,
+  fc.name = NULL
+  
+)
+```
+```{r}
+# Use Log2FoldChange values for gene weights
+
+gene_weights <- stim_de %>%
+  #dplyr::filter(p_val_adj < 0.001) %>% 
+  rownames_to_column("mRNA_gene") %>%
+  tibble() %>%
+  arrange(desc(avg_log2FC)) %>%
+  select(mRNA_gene, weight = avg_log2FC)
+gene_weights
+```
+
+```{r}
+# Get average expression values for these genes in NT control cells
+ctrl_avg_sct <- AverageExpression(PerburbSet, 
+                                  features = gene_weights$mRNA_gene,
+                                  group.by = "type_cell",
+                                  assays = "SCT") %>%
+  as.data.frame() %>%
+  rownames_to_column("mRNA_gene") %>%
+  tibble() %>%
+  select(mRNA_gene, NT.AVG = SCT.NT) %>%
+  mutate(NT.AVG = log(NT.AVG+1)) # Re-log data
+ctrl_avg_sct
+```
+```{r}
+# Calculate activation scores for eachc cell
+cell_scores <- PerburbSet@assays$SCT[gene_weights$mRNA_gene,] %>%
+  as.data.frame() %>%
+  rownames_to_column("mRNA_gene") %>%
+  tibble() %>%
+  gather(cell, value, -mRNA_gene) %>%
+  full_join(gene_weights, by = "mRNA_gene") %>%
+  full_join(ctrl_avg_sct, by = "mRNA_gene") %>%
+  mutate(score = (value * weight)/ NT.AVG) %>%
+  group_by(cell) %>%
+  summarise(activation.score = -1 * sum(score))
+
+cell_scores
+
+# Add cell scores to object metadata
+cell_scores <- cell_scores %>%
+  as.data.frame() %>%
+  column_to_rownames("cell")
+
+
+PerburbSet <- PerburbSet %>%
+  AddMetaData(cell_scores)
+
+head(PerburbSet)
+```
+```{r fig.height=12, fig.width=6}
+
+# Flip the box plot.
+# p <- SCpubr::do_BoxPlot(sample = PerburbSet,
+#                         feature = "activation.score",
+#                         group.by = "sgrna",
+#                         flip = TRUE, order = TRUE)
+# p
+# SCpubr::save_Plot(plot = p, file_name = "PerburbSet_RankingOfGuides.pdf")
+
+p1 <- SCpubr::do_BoxPlot(sample = PerburbSet,
+                        feature = "activation.score",
+                        group.by = "gene",
+                        flip = TRUE, order = TRUE, 
+                        use_silhouette = TRUE)
+p1
+#SCpubr::save_Plot(plot = p1, file_name = "PerburbSet_RankingOfGenesGuides.pdf")
+```
+
+```{r}
+ranking <- read_csv("/Users/magalhae/Desktop/Atshuhiro/Paper/FigureZ/RankTFs/ranking.csv")
+```
+```{r}
+ggplot(ranking, aes(x=Rank, y=Score, label = Perturbedgene)) + 
+  geom_point()  + 
+  scale_x_continuous(trans = 'log')+
+  #scale_x_reverse() +
+  theme_bw() & theme(aspect.ratio = 1)
+
+```
+
+```{r fig.height=12, fig.width=12}
+# identify significant sgRNA which affect gene MKI67 by using LR test
+
+p1 <- cowplot::plot_grid(ncol = 2, nrow = 2, 
+                         selectPlot(GENE = "Cyp2c29", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp3a11", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Nr1i3", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Afp", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1)
+)
+p1
+```
+```{r fig.height=5, fig.width=5}
+# identify significant sgRNA which affect gene MKI67 by using LR test
+
+p1 <- cowplot::plot_grid(ncol = 2, nrow = 2, 
+                         selectPlot2(GENE = "Cyp2c29", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "Cyp3a11", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "Nr1i3", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "Afp", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1)
+)
+p1
+
+ggsave("P2lr_results_Cyp2c29_Cyp1a2_Cyp3a11_Afp.pdf")
+```
+
+```{r}
+selectPlot2 <- function(GENE = NULL, lr_result = NULL, CUTOFF = 0.05, ADJ = "fdr", 
+                       RRA_re1 = NULL, RRA_re2 = NULL, TYPE = select.type, QUALITY = 10) {
+  if (TYPE == "lr") {
+    target_gene_list = strsplit(GENE, ",")[[1]]
+    target_gene_list = trimws(target_gene_list)
+    lr_sc <- as.data.frame(lr_result[1])
+    lr_p <- as.data.frame(lr_result[2])
+    tem_genelist <- target_gene_list
+    for (t in target_gene_list) {
+      if(!(t %in% colnames(lr_sc))){
+        message(t, " couldn't be found in the dataset")
+        tem_genelist <- tem_genelist[tem_genelist != t]
+      }
+    }
+    if (length(tem_genelist >= 1)) {
+      sel_sc <- lr_sc[tem_genelist]
+      sel_sc <- setNames(sel_sc, paste0(colnames(sel_sc), "_sc"))
+      sel_p <- lr_p[tem_genelist]
+      sel_p <- setNames(sel_p, paste0(colnames(sel_p), "_p"))
+      for (i in colnames(sel_p)) {
+        sel_p[, paste0(i,"adj")] <- p.adjust(sel_p[[i]], method = ADJ)
+      }
+      sel_result <- cbind(sel_sc, sel_p)
+      temresult <- sel_result
+      if (length(tem_genelist) == 1) {
+        temresult$FDR <- ifelse(temresult[[3]] <= CUTOFF, paste("<=", CUTOFF), "other")
+        temresult$sgRNA <- rownames(temresult)
+        temresult <- temresult[order(temresult[[1]], decreasing = FALSE), ]
+        temresult$sgRNA <- factor(temresult$sgRNA, levels = temresult$sgRNA)
+        ggplot(temresult, aes(`sgRNA`, y=temresult[[1]], x=as.factor(temresult[[1]]), fill=FDR)) + 
+          geom_point() + 
+          ggtitle(paste(tem_genelist,"slection plot")) + ylab("LR_score") + theme_bw() 
+      } else {
+        tem_p <- temresult[, grep("_padj", colnames(temresult))]
+        tem_p <- tem_p[apply(tem_p, MARGIN = 1, function(x) any(x <= CUTOFF)), ]
+        if (nrow(tem_p) == 0) {
+          message("Didn't find any sgRNAs that significantly affect the given genelist:")
+        } else {
+          colnames(tem_p) <- sub("_padj", "", colnames(tem_p))
+          fal_result <- NULL
+          for (i in colnames(tem_p)) {
+            tem <-tem_p[i]
+            tem <- subset(tem, tem[1] <= CUTOFF)
+            if (nrow(tem) != 0) {
+              p <- data.frame(genes = colnames(tem), sgRNA = rownames(tem), padj = tem[[1]])
+              fal_result <- rbind(fal_result, p)
+            } else {
+              next
+            }
+          }
+          tem_s <- temresult[, grep("_sc", colnames(temresult))]
+          colnames(tem_s) <- sub("_sc", "", colnames(tem_s))
+          re <- NULL
+          for (i in rownames(tem_s)) {
+            tem_1 <- as.matrix(tem_s[i, ])
+            tem_1 <- t(tem_1)
+            p.1 <- data.frame(genes = rownames(tem_1), sgRNA = colnames(tem_1), lr_sc = tem_1[, 1])
+            re <- rbind(re, p.1)
+          }
+          fal_result <- merge(fal_result, re, by = c(1, 2), all = FALSE)
+          fal_result[fal_result == 0] <- "0.001"
+          fal_result$padj <- as.numeric(fal_result$padj)
+          ggplot(fal_result, aes(x=sgRNA, y=-log10(padj), width = 0.3, fill=genes)) +
+           + geom_point() + theme_bw()
+        }
+      }
+    } else {
+      message("Please to check the genes' name")
+    }
+  } else {
+    if (TYPE == "rra") {
+    na <- paste("<=", CUTOFF, sep = "")
+    pos_otx2 <- subset(RRA_re1, p.high < p.low)
+    pos_otx2$FDR.n <- ifelse(pos_otx2$FDR.high <= CUTOFF & pos_otx2$goodsgrna.high >= CUTOFF, paste(na), "other")
+    pos_otx2$sel_score1 <- -log(pos_otx2$p.high)
+    pos_otx2 <- pos_otx2[c("Row.names", "sel_score1", "FDR.n")]
+    colnames(pos_otx2)[1] <- paste("markers")
+    
+    neg_otx2 <- subset(RRA_re1, p.low < p.high)
+    neg_otx2$FDR.n <- ifelse(neg_otx2$FDR.low <= CUTOFF & neg_otx2$goodsgrna.low >= CUTOFF, paste(na), "other")
+    neg_otx2$sel_score1 <- log(neg_otx2$p.low)
+    neg_otx2 <- neg_otx2[c("Row.names", "sel_score1", "FDR.n")]
+    colnames(neg_otx2)[1] <- paste("markers")
+    n_otx2 <- rbind(pos_otx2, neg_otx2)
+    
+    if (!is.null(RRA_re2)) {
+      pos_otx2 <- subset(RRA_re2, p.high < p.low)
+      pos_otx2$FDR.p <- ifelse(pos_otx2$FDR.high <= CUTOFF & pos_otx2$goodsgrna.high >= QUALITY, paste(na), "other")
+      pos_otx2$sel_score2 <- -log(pos_otx2$p.high)
+      pos_otx2 <- pos_otx2[c("Row.names", "sel_score2", "FDR.p")]
+      colnames(pos_otx2)[1] <- paste("markers")
+      
+      neg_otx2 <- subset(RRA_re2, p.low < p.high)
+      neg_otx2$FDR.p <- ifelse(neg_otx2$FDR.low <= CUTOFF & neg_otx2$goodsgrna.low >= QUALITY, paste(na), "other")
+      neg_otx2$sel_score2 <- log(neg_otx2$p.low)
+      neg_otx2 <- neg_otx2[c("Row.names", "sel_score2", "FDR.p")]
+      colnames(neg_otx2)[1] <- paste("markers")
+      p_otx2 <- rbind(pos_otx2, neg_otx2)
+      
+      neg_Nanog <- merge(n_otx2, p_otx2, by = "markers")
+      rownames(neg_Nanog) <- neg_Nanog$markers
+      neg_Nanog$index <- ifelse(neg_Nanog$FDR.p == na | neg_Nanog$FDR.n == na, rownames(neg_Nanog), "other")
+      
+      ggplot(neg_Nanog, aes(x=sel_score1, y=sel_score2)) + geom_point(aes(color=index)) + labs(factor = element_blank()) + 
+        xlim(range(c(neg_Nanog$sel_score1, neg_Nanog$sel_score2))) + ylim(range(c(neg_Nanog$sel_score1, neg_Nanog$sel_score2))) + 
+        geom_vline(xintercept = 0, linetype = "dashed", color = "coral1") + geom_hline(yintercept = 0, linetype = "dashed", color = "coral1") + 
+        geom_text(aes(label=ifelse(neg_Nanog$FDR.p == na | neg_Nanog$FDR.n == na, as.character(rownames(neg_Nanog)),'')), hjust=0.6,vjust=0, size = 3)
+      
+    } else {
+      rownames(n_otx2) <- n_otx2$markers
+      colnames(n_otx2)[3] <- "FDR"
+      n_otx2 <- n_otx2[order(n_otx2[[2]], decreasing = FALSE), ]
+      n_otx2$markers <- factor(n_otx2$markers, levels = n_otx2$markers)
+      ggplot(n_otx2, aes(`markers`, y=sel_score1, label=sel_score1, fill=FDR)) + geom_point()
+    }
+  }
+  }
+}
+```
+```{r fig.height=5, fig.width=5}
+# identify significant sgRNA which affect gene MKI67 by using LR test
+
+p1 <- cowplot::plot_grid(ncol = 2, nrow = 3, 
+                         selectPlot2(GENE = "Cyp2a5", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "Cyp2c37", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "Cyp2c55", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "Cyp2b10", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "Cyp2c50", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1)
+)
+p1
+
+ggsave("P2lr_results_Cyp2c5_Cyp2c37_Cyp2c55_Cyp2b10_Cyp2b50.pdf")
+```
+
+```{r fig.height=12, fig.width=12}
+# identify significant sgRNA which affect gene MKI67 by using LR test
+
+p1 <- cowplot::plot_grid(ncol = 2, nrow = 3, 
+                         selectPlot(GENE = "Cyp2a5", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp2c37", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp2c55", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp2b10", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp2c50", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1)
+)
+p1
+```
+
+
+```{r fig.height=5, fig.width=5}
+p2 <- cowplot::plot_grid(ncol = 2, nrow = 3, 
+                         selectPlot2(GENE = "Igf2", lr_result = lr_result_test, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "H19", lr_result = lr_result_test, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "Bex2", lr_result = lr_result_test, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1)
+)
+p2
+
+ggsave("P2lr_results_Ig2_H19_Bex2.pdf")
+```
+```{r fig.height=12, fig.width=12}
+cowplot::plot_grid(ncol = 2, nrow = 3, 
+                         selectPlot(GENE = "Igf2", lr_result = test, 
+                                    CUTOFF = 0.01, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         #selectPlot(GENE = "H19", lr_result = lr_result_test, 
+                         #           CUTOFF = 0.01, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Bex2", lr_result = test, 
+                                    CUTOFF = 0.01, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1)
+)
+
+```
+```{r fig.height=6, fig.width=6}
+p1 <- cowplot::plot_grid(ncol = 2, nrow = 2, 
+                         featurePlot(RDS = feat_c, GENE = "Nr1i3", sgRNA = "Nr1i3", TYPE = "Vln")& theme(text = element_text(size = 6), aspect.ratio = 1, legend.position = "none"),
+                         featurePlot(RDS = feat_c, GENE = "Cyp2c29", sgRNA = "Nr1i3", TYPE = "Vln")& theme(text = element_text(size = 6), aspect.ratio = 1, legend.position = "none"),
+                         featurePlot(RDS = feat_c, GENE = "Cyp3a11", sgRNA = "Nr1i3", TYPE = "Vln")& theme(text = element_text(size = 6), aspect.ratio = 1, legend.position = "none"),
+                         featurePlot(RDS = feat_c, GENE = "Afp", sgRNA = "Nfix", TYPE = "Vln")& theme(text = element_text(size = 6), aspect.ratio = 1, legend.position = "none")
+)
+p1 
+
+ggsave("Expr_results_Cyp2c29_Cyp1a2_Cyp3a11_Afp.pdf")
+```
+
+```{r}
+selectPlot(GENE = "Nfix", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1)
+
+```
+
+```{r}
+PerburbSet <- SetIdent(PerburbSet, value = "Pertub_Clusters")
+NTvsC11 <- FindMarkers(PerburbSet, ident.1 = "11", ident.2 = "12", min.pct = 0.5)
+```
+```{r}
+lr_score <- read_csv("/Users/magalhae/Desktop/1Network/lr_score_Sample756.csv")
+lr_score_pval <- read_csv("/Users/magalhae/Desktop/1Network/lr_score_pval_Sample756.csv")
+```
+
+```{r}
+df <- lr_score[, (colnames(lr_score) %in% grna_genes)]
+row.names(df) <- lr_score$Perturbedgene
+
+```
+
+```{r fig.height=12, fig.width=12}
+h <- Heatmap(df,
+             name = "LR score", #title of legend
+             col = colorRamp2(c(-0.5, 0, 1), c("#2166ac", "#f7f7f7", "#b2182b")),
+             cluster_rows = T,
+             clustering_distance_rows = "euclidean",
+             clustering_method_rows = "ward.D2",
+             cluster_columns = T,
+             clustering_distance_columns = "euclidean",
+             clustering_method_columns = "ward.D2",
+             show_row_names = T,
+             width = ncol(df)*unit(5, "mm") , height = ncol(df)*unit(5, "mm")
+             )
+h = draw(h)
+```
+
+
+
+```{r}
+dftable = data.frame()
+for(i in 1:ncol(df)) {
+  new <- df[order(df[i], decreasing = TRUE), ]
+  output = c(colnames(df[i]), row.names(new[1,]))
+  dftable = rbind(dftable, output)
+}
+colnames(dftable) <- c("Gene", "Top regulator")
+dftable
+write_csv(dftable, "TopRegulators.csv")
+```
+```{r fig.height=12, fig.width=12}
+
+markers <- list()
+
+
+markers$Embr <- c("Parp6", "Phgdh", "Pparg", "Atf5", "Prkaa2", "Atoh8", "Afp", "Psat1", "Rbl2", "Grb10", "Airn", "Rorc", "Cebpa", "Cited1", "Sat1", "Cebpb", "Trip4", "Chd9", "Meis1", "Id1", "Tsc22d3", "Myc", "Chuk", "Crebl2", "Dnmt1", "Crebrf", "Zbtb16", "Foxm1", "E2f1", "Cdk1", "Crem", "Psph", "Zfp809", "Dbp", "Zfp970", "Bex2", "Esr1", "Top2a", "Bex4", "Zhx3", "Znfx1", "Gsn", "Bex1", "Serpina6", "Hes6", "Hopx", "Hspa1a", "Id3", "Cdkn3", "2010315B03Rik", "Irf5", "Robo1", "Irf6", "Spink1", "Gpc3", "Klf9", "Lpin1", "Macrod1", "H19", "Igf2", "Meg3", "Cdkn1c", "Rian", "Nfix", "Nr0b2", "Nr1d1", "Nr1d2", "Nr1i3", "Slc36a2", "Parp14", "Parp3")
+
+
+
+PerburbSet <- AddModuleScore_UCell(PerburbSet, features = markers, assay = "RNA",
+  slot = "data", w_neg=1)
+#signature.names <- paste0(names(markers), "_UCell")
+```
+```{r fig.height=12, fig.width=12}
+SCpubr::do_FeaturePlot(sample = PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = "Embr_UCell" , ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis_color_map = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("do_FeaturePlot_PerburbSet_signature.names.pdf")
+```
+```{r fig.height=6, fig.width=6}
+
+SCpubr::do_ViolinPlot(sample = PerburbSet, group.by =  "Pertub_Clusters", features = "Embr_UCell") & theme(aspect.ratio = 1/3)
+ggsave("do_ViolinPlot_PerburbSet_signature.names.pdf")
+
+```
+```{r fig.height=12, fig.width=12}
+markers <- list()
+
+markers$CypAll <- c("Cyp1a2", "Cyp2c65", "Cyp2c40", "Cyp2c37", "Cyp2c50", "Cyp2d10", "Cyp2a12", "Cyp27a1", "Cyp7a1", "Cyp4a12a", "Cyp4a31", "Cyp3a11", "Cyp3a25", "Cyp2a4", "Cyp2a5", "Cyp2a22", "Cyp1a1", "Cyp8b1", "Cyp2d26", "Cyp2c23", "Cyp2d9", "Cyp2j5", "Cyp2b9", "Cyp21a1", "Cyp4a10", "Cyp2s1", "Cyp2c68", "Cyp2c70", "Cyp51", "Cyp2b10", "Cyp2c55", "Cyp2c29", "Cyp4b1", "Cyp4a12b", "Cyp7b1")
+
+PerburbSet <- AddModuleScore_UCell(PerburbSet, features = markers, assay = "RNA",
+  slot = "data", w_neg=1)
+
+SCpubr::do_FeaturePlot(sample = PerburbSet, reduction = "phate_onUMAP10", dims = 1:2, features = "CypAll_UCell" , ncol = 3, raster = F, legend.length = 5, font.size = 6, legend.width = 0.5, order = T, viridis_color_map = "A") & theme(aspect.ratio = 1, plot.title = element_text(size=8)) & ylim(-0.022, 0.026) & xlim(-0.02, 0.04)
+ggsave("do_FeaturePlot_PerburbSet_CypAll.pdf")
+
+SCpubr::do_ViolinPlot(sample = PerburbSet, group.by =  "Pertub_Clusters", features = "CypAll_UCell") & theme(aspect.ratio = 1/3)
+ggsave("do_ViolinPlot_PerburbSet_CypAll_UCell.pdf")
+
+```
+```{r}
+PerburbSet <- SetIdent(PerburbSet, value = "Pertub_Clusters")
+de.markers = tibble()
+
+for (i in 1:20){
+  df <- FindMarkers(PerburbSet, ident.1 = i, ident.2 = "NT", only.pos = TRUE, logfc.threshold = 0.25, test.use = "MAST",
+    min.diff.pct = 0.2, max.cells.per.ident = 500, assay = "RNA")
+  df$Condition <- paste0(i, "vsNT")
+  df <- df %>% rownames_to_column("GeneName")
+  de.markers = rbind(de.markers, df)
+}
+
+top25_de_genes_AllvsNT_MAST <- de.markers %>% group_by(Condition) %>% top_n(-25, p_val_adj)
+write_csv(top25_de_genes_AllvsNT_MAST, "top25_de_genes_AllvsNT_MAST.csv")
+```
+
+
+```{r}
+de.markers2 = tibble()
+
+for (i in 1:20){
+  df <- FindMarkers(PerburbSet, ident.1 = "NT", ident.2 = i , only.pos = TRUE, logfc.threshold = 0.25, test.use = "MAST",
+    min.diff.pct = 0.2, max.cells.per.ident = 500, assay = "RNA")
+  df$Condition <- paste0("NTvs", i)
+  df <- df %>% rownames_to_column("GeneName")
+  de.markers2 = rbind(de.markers2, df)
+}
+
+top25_de_genes_NTvsAll_MAST <- de.markers2 %>% group_by(Condition) %>% top_n(-25, p_val_adj)
+write_csv(top25_de_genes_NTvsAll_MAST, "top25_de_genes_NTvsAll_MAST.csv")
+```
+
+```{r}
+de.markers = tibble()
+
+for (i in 1:20){
+  df <- FindMarkers(PerburbSet, ident.1 = i, ident.2 = "NT", only.pos = F, logfc.threshold = 0.25, test.use = "MAST",
+    min.diff.pct = 0.2, max.cells.per.ident = 500, assay = "RNA")
+  df$Condition <- paste0(i, "vsNT")
+  df <- df %>% rownames_to_column("GeneName")
+  de.markers = rbind(de.markers, df)
+}
+
+top25_de_genes_AllvsNT_MAST <- de.markers %>% group_by(Condition) %>% top_n(-25, p_val_adj)
+write_csv(top25_de_genes_AllvsNT_MAST, "top25_de_genes_AllvsNT_MAST_UpDown.csv")
+```
+
+
+```{r}
+de.markers2 = tibble()
+
+for (i in 1:20){
+  df <- FindMarkers(PerburbSet, ident.1 = "NT", ident.2 = i , only.pos = F, logfc.threshold = 0.25, test.use = "MAST",
+    min.diff.pct = 0.2, max.cells.per.ident = 500, assay = "RNA")
+  df$Condition <- paste0("NTvs", i)
+  df <- df %>% rownames_to_column("GeneName")
+  de.markers2 = rbind(de.markers2, df)
+}
+
+top25_de_genes_NTvsAll_MAST <- de.markers2 %>% group_by(Condition) %>% top_n(-25, p_val_adj)
+write_csv(top25_de_genes_NTvsAll_MAST, "top25_de_genes_NTvsAll_MAST_UpDown.csv")
+```

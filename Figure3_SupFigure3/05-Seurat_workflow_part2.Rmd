@@ -1,0 +1,927 @@
+---
+title: "Atshuhiro scRNAseq 07-05-2022"
+output:
+html_notebook:
+fig_width: 12
+fig_height: 4
+html_document:
+df_print: paged
+pdf_document: default
+editor_options:
+chunk_output_type: inline
+---
+Load the required libraries
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(Seurat)
+library(cowplot)
+library(hdf5r)
+library(kableExtra)
+library(patchwork)
+#library(biomaRt)
+library(limma)
+library(topGO)
+#library(org.Hs.eg.db)
+library(sva)
+library(scran)
+library(tidyverse)
+library(DoubletFinder)
+library(gprofiler2)
+library(rliger)
+library(future)
+library(harmony)
+library(pheatmap)
+library(clustree)
+library(venn)
+library(enrichR)
+library(rafalib)
+library(scPred)
+library(loomR)
+library(SeuratWrappers)
+#library(velocyto.R)
+library(Nebulosa)
+library(ggalluvial)
+library(parallel)
+library(viridis)
+# work in parallel
+options(mc.cores = detectCores() - 1)
+plan("multicore", workers = detectCores() - 1)
+options(future.globals.maxSize = 28 * 1024 ^ 3)
+set.seed(12345)
+setwd("/Users/magalhae/Desktop/Atshuhiro/NEW_WORK/")
+```
+
+```{r}
+# Basic function to convert human to mouse gene names
+convertHumanGeneList <- function(x){
+require("biomaRt")
+human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+humanx <- unique(genesV2[, 2])
+# Print the first 6 genes found to the screen
+print(head(humanx))
+return(humanx)
+}
+```
+
+```{r}
+# Set the experiment and sample names
+experiment_name = "Atshuhiro experiment"
+dataset_loc <- "/Users/magalhae/Desktop/Atshuhiro/NEW_WORK/"
+ids <- c("RNA-738", "RNA-739", "RNA-740", "RNA-755", "RNA-756_RNA-757")
+```
+```{r}
+# Read in the cell ranger sample metrics csv files
+d10x.metrics <- lapply(ids, function(i){
+# remove _Counts is if names don't include them
+metrics <- read.csv(file.path(dataset_loc,paste0(i,"/outs"),"metrics_summary.csv"), colClasses = "character")
+})
+experiment.metrics <- do.call("rbind", d10x.metrics)
+rownames(experiment.metrics) <- ids
+
+sequencing_metrics <- data.frame(t(experiment.metrics[,c(4:16,1,17,2,3,18,19)]))
+
+row.names(sequencing_metrics) <- gsub("\\."," ", rownames(sequencing_metrics))
+sequencing_metrics %>%
+kable(caption = 'Cell Ranger Results') %>%
+pack_rows("Sequencing Characteristics", 1, 6, label_row_css = "background-color: #666; color: #fff;") %>%
+pack_rows("Mapping Characteristics", 7, 13, label_row_css = "background-color: #666; color: #fff;") %>%
+pack_rows("Cell Characteristics", 14, 19, label_row_css = "background-color: #666; color: #fff;") %>%
+kable_styling("striped")
+write_csv(sequencing_metrics, "tables/sequencing_metrics.csv")
+```
+
+```{r message=FALSE, warning=FALSE}
+# Load the Cell Ranger Matrix Data (hdf5 file) and create the base Seurat object
+RNA_756_RNA_757S <-Read10X_h5("RNA-756_RNA-757/outs/filtered_feature_bc_matrix.h5")
+RNA_756_RNA_757 <-Read10X("soupX_AM-RNA_756_RNA_757_filt")
+RNA_738 <-Read10X("soupX_AM-RNA_738_filt")
+```
+```{r}
+RNA_739 <-Read10X("soupX_AM-RNA-739_filt")
+RNA_740 <-Read10X("soupX_AM-RNA-740_filt")
+RNA_755 <-Read10X("soupX_AM-RNA-755_filt")
+
+```
+```{r message=FALSE, warning=FALSE}
+#Make Seurat objects
+
+RNA_756_RNA_757S <- RNA_756_RNA_757S$`CRISPR Guide Capture`
+
+RNA_756_RNA_757 <- CreateSeuratObject(counts = RNA_756_RNA_757,
+  assay = "RNA", project = "RNA_756_RNA_757")
+
+
+RNA_756_RNA_757[["Crispr"]] <- CreateAssayObject(RNA_756_RNA_757S)
+rm(RNA_756_RNA_757S)
+
+```
+```{r}
+RNA_756_RNA_757S <- Read10X_h5("RNA-756_RNA-757/outs/filtered_feature_bc_matrix.h5")
+RNA_756_RNA_757S <- RNA_756_RNA_757S$`CRISPR Guide Capture`
+```
+```{r}
+RNA_738 <- CreateSeuratObject(counts = RNA_738,
+  assay = "RNA", project = "RNA_738")
+RNA_739 <- CreateSeuratObject(counts = RNA_739,
+  assay = "RNA", project = "RNA_739")
+RNA_740 <- CreateSeuratObject(counts = RNA_740,
+  assay = "RNA", project = "RNA_740")
+RNA_755 <- CreateSeuratObject(counts = RNA_755,
+  assay = "RNA", project = "RNA_755")
+```
+
+```{r}
+pbmc.big <- merge(RNA_756_RNA_757, 
+                  y = c(RNA_738, RNA_739, RNA_740, RNA_755), 
+                  add.cell.ids = c("Preturb_set", "P1_liver", "P10_liver", "Adult_liver", "E15.5"), 
+                  project = "MatHep_19082022")
+pbmc.big
+crsp2 <- GetAssayData(pbmc.big, assay = "Crispr")
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+
+add_markers_seurat <- function(x) {
+  ## Make subset of cells expressing markers
+  mCherryCells <- subset(x, subset = `mCherry-T2A-Puro-WPRE-U6-sgRNA-LTR-SV40polyA` > 0)
+  dCas9Cells <- subset(x, subset = `NLS-dCas9-NLS-VP64-T2A-BSD-WPRE-bGHpolyA` > 0)
+  MS2p65_hsf1Cells <- subset(x, subset = `MS2-N55K-SV40NLS-p65-HSF1-T2A-Hygr-WPRE-bGHpolyA` > 0 | `MS2-N55K-SV40NLS-p65-HSF1-T2A-Hygr-WPRE-bGHpolyA.1` >0 )
+  ## Get cell names
+  mCherryCellsNames <- rownames(mCherryCells@meta.data)
+  dCas9CellsNames <- rownames(dCas9Cells@meta.data)
+  MS2p65_hsf1CellsNames <- rownames(MS2p65_hsf1Cells@meta.data)
+  ## Mutate a column in original objects metadata
+  x$barcode <- rownames(x@meta.data)
+  x@meta.data <- x@meta.data %>% mutate(`mCherry` = ifelse((x$barcode %in% mCherryCellsNames), "Pos","Neg"))
+  x@meta.data <- x@meta.data %>% mutate(`dCas9` = ifelse((x$barcode %in% dCas9CellsNames), "Pos","Neg"))
+  x@meta.data <- x@meta.data %>% mutate(`MS2p65_hsf1` = ifelse((x$barcode %in% MS2p65_hsf1CellsNames), "Pos","Neg"))
+  counts_pbmc <- GetAssayData(x, assay = "RNA")
+  counts_pbmc <- counts_pbmc[-(which(rownames(counts_pbmc) %in% c("mCherry-T2A-Puro-WPRE-U6-sgRNA-LTR-SV40polyA", "NLS-dCas9-NLS-VP64-T2A-BSD-WPRE-bGHpolyA", "MS2-N55K-SV40NLS-p65-HSF1-T2A-Hygr-WPRE-bGHpolyA", "MS2-N55K-SV40NLS-p65-HSF1-T2A-Hygr-WPRE-bGHpolyA.1"))),]
+  x <- subset(x, features = rownames(counts_pbmc))
+}
+
+```
+```{r}
+RNA_756_RNA_757 <- add_markers_seurat(RNA_756_RNA_757)
+```
+```{r}
+RNA_738 <- RenameIdents(object = RNA_738, `RNA_738` = "P1_liver")
+RNA_739 <- RenameIdents(object = RNA_739, `RNA_739` = "P10_liver")
+RNA_740 <- RenameIdents(object = RNA_740, `RNA_740` = "Adult_liver")
+RNA_755 <- RenameIdents(object = RNA_755, `RNA_755` = "E15.5")
+RNA_756_RNA_757 <- RenameIdents(object = RNA_756_RNA_757, `RNA_756_RNA_757` = "Preturb_set")
+
+```
+RNA_738 <- 
+RNA_739 <- 
+RNA_740 <- 
+RNA_755 <- 
+RNA_756_RNA_757 <- 
+```{r}
+# Calculate percengate of Mitocondrial and Ribosomal genes
+
+add_mito_ribo_seurat <- function(x) {
+  x <- PercentageFeatureSet(x, "^mt-", col.name = "percent_mito")
+  x <- PercentageFeatureSet(x, "^Rp[sl][[:digit:]]|^Rplp[[:digit:]]|^Rpsa", col.name = "percent_ribo")
+}
+
+RNA_738 <- add_mito_ribo_seurat(RNA_738)
+RNA_739 <- add_mito_ribo_seurat(RNA_739)
+RNA_740 <- add_mito_ribo_seurat(RNA_740)
+RNA_755 <- add_mito_ribo_seurat(RNA_755)
+RNA_756_RNA_757 <- add_mito_ribo_seurat(RNA_756_RNA_757)
+
+```
+```{r fig.height=3, fig.width=10}
+# Visualize QC metrics as a violin plot
+
+
+feature_plot <- function(x, y) {
+  temp_p <- VlnPlot(x, features = c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo"), pt.size = -1, ncol = 4)
+  plot_grid(nrow =1, temp_p)
+  ggsave(paste0("figures/","Features_", print(substitute(x)), y, ".pdf"))
+  return(plot_grid(nrow =1, temp_p))
+}
+
+feature_plot(RNA_738, "_raw_")
+feature_plot(RNA_739, "_raw_")
+feature_plot(RNA_740, "_raw_")
+feature_plot(RNA_755, "_raw_")
+feature_plot(RNA_756_RNA_757, "_raw_")
+
+
+```
+```{r fig.height=3, fig.width=10}
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+feature_plot_scater <- function(x, y) {
+  p3 <- FeatureScatter(x, "nCount_RNA", "nFeature_RNA", group.by = "orig.ident", pt.size = 0.1) & NoLegend() & theme(aspect.ratio = 1)
+  p4 <- FeatureScatter(x, feature1 = "nCount_RNA", feature2 = "percent_mito", pt.size = 0.1) & NoLegend() & theme(aspect.ratio = 1)
+  temp_p <- plot_grid(ncol = 2, nrow = 1,p3, p4)
+  ggsave(paste0("figures/","Scatter_nCount_", print(substitute(x)), y, ".pdf"))
+  return(temp_p)
+}
+
+feature_plot_scater(RNA_738, "_raw_")
+feature_plot_scater(RNA_739, "_raw_")
+feature_plot_scater(RNA_740, "_raw_")
+feature_plot_scater(RNA_755, "_raw_")
+feature_plot_scater(RNA_756_RNA_757, "_raw_")
+
+```
+
+```{r}
+#select cells with percent.mito < 25
+
+FilterCells <- function(x, y, w, z) {
+  temp_s <- x
+  selected_mito <- WhichCells(temp_s, expression = percent_mito < y)
+  temp_s <- subset(x, cells = selected_mito)
+  selected_c <- WhichCells(temp_s, expression = nFeature_RNA > w | nCount_RNA < z)
+  temp_s <- subset(x, cells = selected_c)
+  return(temp_s)
+}
+
+RNA_738_f <- FilterCells(RNA_738, 20, 500, 800)
+RNA_739_f <- FilterCells(RNA_739, 20, 500, 800)
+RNA_740_f <- FilterCells(RNA_740, 20, 500, 800)
+RNA_755_f <- FilterCells(RNA_755, 20, 500, 800)
+RNA_756_RNA_757_f <- FilterCells(RNA_756_RNA_757, 20, 500, 800)
+```
+
+```{r fig.height=3, fig.width=10}
+# Visualize QC metrics as a violin plot
+
+
+feature_plot_scater(RNA_738_f, "_Filtered_")
+feature_plot_scater(RNA_739_f, "_Filtered_")
+feature_plot_scater(RNA_740_f, "_Filtered_")
+feature_plot_scater(RNA_755_f, "_Filtered_")
+feature_plot_scater(RNA_756_RNA_757_f, "_Filtered_")
+
+feature_plot(RNA_738_f, "_Filtered_")
+feature_plot(RNA_739_f, "_Filtered_")
+feature_plot(RNA_740_f, "_Filtered_")
+feature_plot(RNA_755_f, "_Filtered_")
+feature_plot(RNA_756_RNA_757_f, "_Filtered_")
+
+```
+
+
+
+```{r}
+
+remove_mito_ribo <- function(x){
+  temp_s <- x
+  mito.genes = grep("^mt-", rownames(temp_s), value = TRUE)
+  ribo.genes = grep("^Rp[sl][[:digit:]]|^Rplp[[:digit:]]|^Rpsa", rownames(temp_s), value = TRUE)
+  counts <- GetAssayData(x, assay = "RNA")
+  counts <- counts[-(which(rownames(counts) %in% c('Malat1',mito.genes, ribo.genes))),]
+  temp_s <- subset(temp_s, features = rownames(counts))
+  return(temp_s)
+}
+
+RNA_738_f <- remove_mito_ribo(RNA_738_f)
+RNA_739_f <- remove_mito_ribo(RNA_739_f)
+RNA_740_f <- remove_mito_ribo(RNA_740_f)
+RNA_755_f <- remove_mito_ribo(RNA_755_f)
+RNA_756_RNA_757_f <- remove_mito_ribo(RNA_756_RNA_757_f)
+
+RNA_756_RNA_757_f[["Crispr"]] <- CreateAssayObject(RNA_756_RNA_757S[, colnames(RNA_756_RNA_757_f)])
+```
+
+```{r}
+# Saving objects 'x' and 'y'
+save(RNA_738_f, RNA_739_f, RNA_740_f, RNA_755_f, RNA_756_RNA_757_f, file = "SeuratObjects_filtered_beforeCellcycle_Spoupx_09102022.RData")
+#load(file = "Rdata/SeuratObjects_filtered_beforeCellcycle_noSpoupx.RData")
+```
+
+```{r}
+# Sort cells by cellcycle
+#s.genes <- convertHumanGeneList(cc.genes$s.genes)
+#g2m.genes <- convertHumanGeneList(cc.genes$g2m.genes)
+
+s.genes <- c("Mcm5", "Pcna", "Tyms", "Fen1", "Mcm2", "Mcm4", "Rrm1", "Ung", "Gins2", "Mcm6", "Cdca7", "Dtl", "Prim1", "Uhrf1", "Cenpu", "Hells", "Rfc2", "Rpa2", "Nasp", "Rad51ap1", "Gmnn", "Wdr76", "Slbp", "Ccne2", "Ubr7", "Pold3", "Msh2", "Atad2", "Rad51", "Rrm2", "Cdc45", "Cdc6", "Exo1", "Tipin", "Dscc1", "Blm", "Casp8ap2", "Usp1", "Clspn", "Pola1", "Chaf1b", "Brip1", "E2f8")
+
+g2m.genes <- c("Hmgb2", "Cdk1", "Nusap1", "Ube2a", "Birc5", "Tpx2", "Top2a", "Ndc80", "Cks2", "Nuf2", "Cks1b", "Mki67", "Tmpo", "Cenpf", "Tacc3", "Pimreg", "Smc4", "Ccnb2", "Ckap2l", "Ckap2", "Aurkb", "Bub1", "Kif11", "Anp32e", "Tubb4b", "Gtse1", "Kif20b", "Hjurp", "Cdca3", "Jpt1", "Cdc20", "Ttk", "Cdc25c", "Kif2c", "Rangap1", "Ncapd2", "Dlgap5", "Cdca2", "Cdca8", "Ect2", "Kif23", "Hmmr", "Aurka", "Psrc1", "Anln", "Lbr", "Ckap5", "Cenpe", "Ctcf", "Nek2", "G2e3", "Gas2l3", "Cbx5", "Cenpa")
+
+
+```
+
+
+```{r}
+
+# The data need to be normalized and logtransformed.
+
+Cell_cycle_regress <- function(x){
+  temp_s <- x
+  temp_s = NormalizeData(temp_s, verbose = FALSE)
+  temp_s = FindVariableFeatures(temp_s, selection.method = "vst", verbose = F)
+  temp_s <- ScaleData(temp_s, features = rownames(temp_s))
+  temp_s <- RunPCA(temp_s, features = VariableFeatures(temp_s), nfeatures.print = 10)
+  temp_s <- CellCycleScoring(temp_s, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+  temp_s <- RunPCA(temp_s, features = c(s.genes, g2m.genes), approx=FALSE)
+  temp_s <- ScaleData(temp_s, vars.to.regress = c("S.Score", "G2M.Score"), features = rownames(temp_s))
+  cowplot::plot_grid(ncol = 2, nrow = 1,DimPlot(temp_s,) & theme(aspect.ratio = 1), DimPlot(temp_s, group.by = "orig.ident") & theme(aspect.ratio = 1))
+  ggsave(paste0("figures/","Singlecellsorted_", print(substitute(x)), ".pdf"))
+  
+  return(temp_s)
+}
+
+RNA_738_f <- Cell_cycle_regress(RNA_738_f)
+RNA_739_f <- Cell_cycle_regress(RNA_739_f)
+RNA_740_f <- Cell_cycle_regress(RNA_740_f)
+RNA_755_f <- Cell_cycle_regress(RNA_755_f)
+RNA_756_RNA_757_f <- Cell_cycle_regress(RNA_756_RNA_757_f)
+```
+
+```{r}
+# Saving objects 'x' and 'y'
+save(RNA_738_f, RNA_739_f, RNA_740_f, RNA_755_f, RNA_756_RNA_757_f, file = "SeuratObjects_filtered_AftereCellcycle_Spoupx_09102022.RData")
+#load( file = "SeuratObjects_filtered_AfterCellcycle_Spoupx.RData") 
+```
+
+
+```{r}
+
+Remove_douplets_froseurat <- function(x){
+  temp_s <- x
+  temp_s <- SetIdent(temp_s, value = "orig.ident")
+  temp_s <- NormalizeData(temp_s)
+  temp_s <- FindVariableFeatures(temp_s)
+  temp_s <- ScaleData(temp_s)
+  temp_s <- RunPCA(temp_s)
+
+  # Find significant PCs
+  stdv <- temp_s[["pca"]]@stdev
+  sum.stdv <- sum(temp_s[["pca"]]@stdev)
+  percent.stdv <- (stdv / sum.stdv) * 100
+  cumulative <- cumsum(percent.stdv)
+  co1 <- which(cumulative > 90 & percent.stdv < 5)[1]
+  co2 <- sort(which((percent.stdv[1:length(percent.stdv) - 1] - 
+ percent.stdv[2:length(percent.stdv)]) > 0.1), 
+  decreasing = T)[1] + 1
+  min.pc <- min(co1, co2)
+  min.pc
+
+  # finish pre-processing
+  temp_s <- RunUMAP(temp_s, dims = 1:min.pc)
+  temp_s <- FindNeighbors(object = temp_s, dims = 1:min.pc)
+  temp_s <- FindClusters(object = temp_s, resolution = 0.1)
+
+  # pK identification (no ground-truth)
+  sweep.list <- paramSweep_v3(temp_s, PCs = 1:min.pc, num.cores = detectCores() - 1)
+  sweep.stats <- summarizeSweep(sweep.list)
+  bcmvn <- find.pK(sweep.stats)
+  barplot(bcmvn$BCmetric, names.arg = bcmvn$pK, las=2)
+  ggsave(paste0("figures/","barplot_pK_doublet_", print(substitute(x)), ".pdf"))
+ 
+  # Optimal pK is the max of the bomodality coefficent (BCmvn) distribution
+  bcmvn.max <- bcmvn[which.max(bcmvn$BCmetric),]
+  optimal.pk <- bcmvn.max$pK
+  optimal.pk <- as.numeric(levels(optimal.pk))[optimal.pk]
+
+ ## Homotypic doublet proportion estimate
+  annotations <- temp_s@meta.data$seurat_clusters
+  homotypic.prop <- modelHomotypic(annotations) 
+  nExp.poi <- round(optimal.pk * nrow(temp_s@meta.data)) ## Assuming 7.5% doublet formation rate - tailor for your dataset
+  nExp.poi.adj <- round(nExp.poi * (1 - homotypic.prop))
+
+  # Remove doublet cells.
+  nExp2 <- round(ncol(temp_s) * 0.04)# expect 4% doublets
+  temp_s <- doubletFinder_v3(temp_s, pK = optimal.pk, nExp = nExp2, PCs = 1:min.pc)
+
+  # name of the DF prediction can change, so extract the correct column name.
+  DF.name2 = colnames(temp_s@meta.data)[grepl("DF.classification", colnames(temp_s@meta.data))]
+  
+  cowplot::plot_grid(ncol = 2, DimPlot(temp_s, group.by = "orig.ident") & theme(aspect.ratio = 1), 
+  DimPlot(temp_s, group.by = DF.name2) & theme(aspect.ratio = 1))
+  ggsave(paste0("figures/","Doublet_Classifiction_", print(substitute(x)), ".pdf"))
+
+  temp_s = temp_s[, temp_s@meta.data[, DF.name2] == "Singlet"]
+  return(temp_s)
+}
+
+
+RNA_738_f <- Remove_douplets_froseurat(RNA_738_f)
+RNA_739_f <- Remove_douplets_froseurat(RNA_739_f)
+RNA_740_f <- Remove_douplets_froseurat(RNA_740_f)
+RNA_755_f <- Remove_douplets_froseurat(RNA_755_f)
+RNA_756_RNA_757_f <- Remove_douplets_froseurat(RNA_756_RNA_757_f)
+
+
+```
+
+```{r}
+#save(RNA_738_f, RNA_739_f, RNA_740_f, RNA_755_f, RNA_756_RNA_757_f, file = "SeuratObjects_filtered_AfterDoublet_Spoupx_09102022.RData")
+load(file = "SeuratObjects_filtered_AfterDoublet_Spoupx_09102022.RData")
+```
+```{r}
+rm(RNA_738_f, RNA_739_f, RNA_740_f, RNA_755_f, RNA_738, RNA_739, RNA_740, RNA_755, RNA_756_RNA_757)
+```
+
+
+```{r}
+pbmc.big <- merge(RNA_738,
+                  y = c(RNA_739, RNA_740, RNA_755), 
+                  add.cell.ids = c("P1_liver", "P10_liver", "Adult_liver", "E15.5"), 
+                  project = "MatHep_9102022")
+```
+
+```{r}
+#save(pbmc.big, file = "SeuratObject_WTref_Spoupx.RData")
+load("SeuratObject_WTref_Spoupx.RData")
+```
+
+```{r}
+pbmc.big = NormalizeData(pbmc.big, verbose = FALSE)
+pbmc.big = FindVariableFeatures(pbmc.big, selection.method = "vst", verbose = F)
+pbmc.big <- ScaleData(pbmc.big, features = rownames(pbmc.big))
+pbmc.big <- RunPCA(pbmc.big, features = VariableFeatures(pbmc.big), nfeatures.print = 10)
+pbmc.big <- CellCycleScoring(pbmc.big, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+pbmc.big <- RunPCA(pbmc.big, features = c(s.genes, g2m.genes), approx=FALSE)
+pbmc.big <- ScaleData(pbmc.big, vars.to.regress = c("S.Score", "G2M.Score"), features = rownames(pbmc.big))
+```
+```{r fig.height=4, fig.width=12}
+cowplot::plot_grid(ncol = 2, nrow = 1,DimPlot(pbmc.big,) & theme(aspect.ratio = 1), DimPlot(pbmc.big, group.by = "orig.ident") & theme(aspect.ratio = 1))
+```
+
+
+
+```{r}
+
+pbmc.big <- RunPCA(pbmc.big, pc.genes = pbmc.big@var.genes, npcs = 30, verbose = FALSE)
+# Remove batch effects
+pbmc.big <- pbmc.big %>% 
+    RunHarmony("orig.ident", plot_convergence = TRUE)
+```
+
+```{r}
+save(data.filt, file = "SeuratObject_filtered_NEW_SETS_Spoupx.RData")
+#load("SeuratObjects_filtered_SortedS2.RData")
+```
+
+```{r}
+data.filt <- SetIdent(data.filt, value = "orig.ident")
+data.filt = NormalizeData(data.filt, verbose = FALSE)
+data.filt = FindVariableFeatures(data.filt ,selection.method = "vst", verbose = F)
+data.filt = ScaleData(data.filt, verbose = F)
+data.filt <- RunPCA(data.filt, pc.genes = data.filt@var.genes, npcs = 30, verbose = FALSE)
+
+data.filt <- RunUMAP(data.filt, reduction = "pca", dims = 1:30, n.components = 2, n.neighbors = 30, 
+n.epochs = 200, min.dist = 0.3, learning.rate = 1, spread = 1)
+
+
+res = 1
+data.filt <- FindNeighbors(data.filt, dims = 1:30 )
+
+for (res in c(0.1, 0.25, 0.5, 1, 1.5, 2)) {
+data.filt <- FindClusters(data.filt, graph.name = "RNA_snn", resolution = res, algorithm = 1, future.seed=TRUE)
+}
+```
+
+
+```{r}
+# Saving objects 'x' and 'y'
+save(data.filt, file = "SeuratObjects_filtered_afterClustering_S2_noSpoupx.RData")
+#load("Rdata/SeuratObjects_filtered_afterClustering_S2.RData")
+```
+
+```{r}
+sel.clust = "RNA_snn_res.2"
+data.filt <- SetIdent(data.filt, value = sel.clust)
+```
+
+```{r}
+clustree(data.filt@meta.data, prefix = "RNA_snn_res.")
+ggsave("figures/ClusterTree.pdf")
+```
+
+
+```{r}
+# Get number of cells per cluster and per sample of origin
+nCeelsPerC <- table(data.filt@meta.data$RNA_snn_res.2, data.filt@meta.data$orig.ident)
+nCeelsPerC <- as.data.frame(nCeelsPerC)
+
+
+write_csv(nCeelsPerC, "tables/n_cells_per_cluster_W-Ref.csv")
+```
+```{r}
+library(janitor)
+
+mcherry2 <- table(paste0(data.filt@meta.data$RNA_snn_res.2, data.filt@meta.data$mCherry))
+Mkp2 <- rbind(mcherry2)
+Mkp2 <- as.data.frame(Mkp2)
+meta.data2 <- data.filt[[]]
+counts2 <- group_by(meta.data2, mCherry, RNA_snn_res.2) %>% summarise(count = n())
+write.csv(counts2, "tables/Cells_meGFP_PosNeg_perCluster_Sample2.csv")
+
+ggplot(counts2, aes(RNA_snn_res.2, count, fill = mCherry)) +
+geom_bar(position="fill", stat = 'identity')
+ggsave("figures/mCherryCount.pdf")
+
+
+###cas9
+
+dcas9 <- table(paste0(data.filt@meta.data$RNA_snn_res.2, data.filt@meta.data$dCas9))
+dckp2 <- rbind(dcas9)
+dckp2 <- as.data.frame(dckp2)
+meta.data2 <- data.filt[[]]
+counts2C9 <- group_by(meta.data2, dCas9, RNA_snn_res.2) %>% summarise(count = n())
+write.csv(counts2C9, "tables/Cells_meGFP_PosNeg_perCluster_Sample2.csv")
+
+ggplot(counts2C9, aes(RNA_snn_res.2, count, fill = dCas9)) +
+geom_bar(position="fill", stat = 'identity')
+ggsave("figures/dCas9Count.pdf")
+```
+```{r}
+#Build subset of Wild type cells
+WT_reference <- subset(x= data.filt, subset = nCount_Crispr == 0)
+
+WT_reference@meta.data <- WT_reference@meta.data %>% mutate(`Perturbed` = "False")
+
+save(WT_reference, file = "Rdata/WT_reference_20072022.RData")
+
+Perturbed_set <- subset(x= data.filt, subset = nCount_Crispr > 0)
+Perturbed_set@meta.data <- Perturbed_set@meta.data %>% mutate(`Perturbed` = "True")
+
+save(Perturbed_set, file = "Rdata/Perturbed_set_20072022.RData")
+
+```
+
+```{r}
+Perturbed_setCellsNamesS2 <- rownames(WT_reference@meta.data)
+WT_referenceCellsNamesS2 <- rownames(Perturbed_set@meta.data)
+
+## Mutate a column in original objects metadata
+
+data.filt@meta.data <- data.filt@meta.data %>% mutate(`Perturbed` = ifelse((data.filt$barcode %in% Perturbed_setCellsNamesS2), "Perturbed","Non Perturbed"))
+```
+```{r fig.height=12, fig.width=12}
+cowplot::plot_grid(ncol = 2, nrow =3, 
+                   DimPlot(data.filt, group.by = "Perturbed") & theme(aspect.ratio = 1),
+                   FeaturePlot(data.filt, features="nCount_Crispr", label=TRUE) & theme(aspect.ratio = 1),
+                   DimPlot(Perturbed_set, group.by = "Perturbed") & theme(aspect.ratio = 1),
+                   FeaturePlot(Perturbed_set, features="nCount_Crispr", label=TRUE) & theme(aspect.ratio = 1),
+                   DimPlot(WT_reference, group.by = "Perturbed") & theme(aspect.ratio = 1),
+                   FeaturePlot(WT_reference, features="nCount_Crispr", label=TRUE) & theme(aspect.ratio = 1)
+)
+
+```
+
+
+
+```{r}
+#WT_reference
+
+WT_reference = FindVariableFeatures(WT_reference ,selection.method = "vst", verbose = F)
+WT_reference = ScaleData(WT_reference, verbose = F)
+WT_reference <- RunPCA(WT_reference, pc.genes = WT_reference@var.genes, npcs = 30, verbose = FALSE)
+
+WT_reference <- RunUMAP(WT_reference, reduction = "pca", dims = 1:30, n.components = 2, n.neighbors = 30, 
+n.epochs = 200, min.dist = 0.3, learning.rate = 1, spread = 1)
+
+WT_reference <- RunUMAP(WT_reference, reduction.name = "UMAP10_on_PCA", reduction = "pca",
+    dims = 1:30, n.components = 10, n.neighbors = 30, n.epochs = 200, min.dist = 0.3,
+    learning.rate = 1, spread = 1)
+
+res = 1
+WT_reference <- FindNeighbors(WT_reference, dims = 1:30 )
+
+
+
+for (res in c(0.1, 0.25, 0.5, 1, 1.5, 2)) {
+WT_reference <- FindClusters(WT_reference, graph.name = "RNA_snn", resolution = res, algorithm = 1, future.seed=TRUE)
+}
+
+#Perturbed_set
+
+Perturbed_set = FindVariableFeatures(Perturbed_set ,selection.method = "vst", verbose = F)
+Perturbed_set = ScaleData(Perturbed_set, verbose = F)
+Perturbed_set <- RunPCA(Perturbed_set, pc.genes = Perturbed_set@var.genes, npcs = 30, verbose = FALSE)
+
+Perturbed_set <- RunUMAP(Perturbed_set, reduction = "pca", dims = 1:30, n.components = 2, n.neighbors = 30, 
+n.epochs = 200, min.dist = 0.3, learning.rate = 1, spread = 1)
+
+Perturbed_set <- RunUMAP(Perturbed_set, reduction.name = "UMAP10_on_PCA", reduction = "pca",
+    dims = 1:30, n.components = 10, n.neighbors = 30, n.epochs = 200, min.dist = 0.3,
+    learning.rate = 1, spread = 1)
+
+
+res = 1
+Perturbed_set <- FindNeighbors(Perturbed_set, dims = 1:30 )
+
+for (res in c(0.1, 0.25, 0.5, 1, 1.5, 2)) {
+Perturbed_set <- FindClusters(Perturbed_set, graph.name = "RNA_snn", resolution = res, algorithm = 1, future.seed=TRUE)
+}
+```
+```{r}
+#WT_reference
+
+WT_reference <- RunTSNE(WT_reference, reduction = "pca", dims = 1:30, perplexity = 30, max_iter = 1000,
+    theta = 0.5, eta = 200, num_threads = 0)
+#Perturbed_set
+Perturbed_set <- RunTSNE(Perturbed_set, reduction = "pca", dims = 1:30, perplexity = 30, max_iter = 1000,
+    theta = 0.5, eta = 200, num_threads = 0)
+```
+
+
+```{r fig.width=14}
+
+options = guides(color = guide_legend(override.aes = list(size=3), ncol=2) )
+
+# each time you run clustering, the data is stored in meta data columns:
+# seurat_clusters - lastest results only CCA_snn_res.XX - for each different
+# resolution you test.
+
+plot_grid(ncol = 3, nrow = 3, DimPlot(WT_reference, reduction = "umap", group.by = "RNA_snn_res.0.5") +
+    ggtitle("UMAP louvain_0.5")+ theme(aspect.ratio = 1) + options, 
+    DimPlot(WT_reference, reduction = "umap", group.by = "RNA_snn_res.1") +
+    ggtitle("UMAP louvain_1")+ theme(aspect.ratio = 1) + options, 
+    DimPlot(WT_reference, reduction = "umap", group.by = "RNA_snn_res.2") +
+    ggtitle("UMAP louvain_2")+ theme(aspect.ratio = 1) + options,
+    DimPlot(WT_reference, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.0.5") +
+    ggtitle("UMAP10_on_PCA louvain_0.5")+ theme(aspect.ratio = 1) + options,
+    DimPlot(WT_reference, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.1") +
+    ggtitle("UMAP10_on_PCA louvain_1")+ theme(aspect.ratio = 1) + options,
+    DimPlot(WT_reference, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.2") +
+    ggtitle("UMAP10_on_PCA louvain_2")+ theme(aspect.ratio = 1) + options,
+    DimPlot(WT_reference, reduction = "tsne", group.by = "RNA_snn_res.0.5") +
+    ggtitle("tsne louvain_0.5")+ theme(aspect.ratio = 1) + options,
+    DimPlot(WT_reference, reduction = "tsne", group.by = "RNA_snn_res.1") +
+    ggtitle("tsne louvain_1")+ theme(aspect.ratio = 1) + options,
+    DimPlot(WT_reference, reduction = "tsne", group.by = "RNA_snn_res.2") +
+    ggtitle("tsne louvain_2") + theme(aspect.ratio = 1) + options
+    )
+
+ggsave("figures/WT_reference.pdf")
+
+```
+```{r fig.width=16}
+
+options = guides(color = guide_legend(override.aes = list(size=3), ncol=2) )
+options4 = guides(color = guide_legend(override.aes = list(size=3), ncol=3) )
+# each time you run clustering, the data is stored in meta data columns:
+# seurat_clusters - lastest results only CCA_snn_res.XX - for each different
+# resolution you test.
+
+plot_grid(ncol = 3, nrow = 3, DimPlot(Perturbed_set, reduction = "umap", group.by = "RNA_snn_res.0.5") +
+    ggtitle("UMAP louvain_0.5")+ theme(aspect.ratio = 1) + options, 
+    DimPlot(Perturbed_set, reduction = "umap", group.by = "RNA_snn_res.1") +
+    ggtitle("UMAP louvain_1")+ theme(aspect.ratio = 1) + options, 
+    DimPlot(Perturbed_set, reduction = "umap", group.by = "RNA_snn_res.2") +
+    ggtitle("UMAP louvain_2")+ theme(aspect.ratio = 1) + options4,
+    DimPlot(Perturbed_set, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.0.5") +
+    ggtitle("UMAP10_on_PCA louvain_0.5")+ theme(aspect.ratio = 1) + options,
+    DimPlot(Perturbed_set, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.1") +
+    ggtitle("UMAP10_on_PCA louvain_1")+ theme(aspect.ratio = 1) + options,
+    DimPlot(Perturbed_set, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.2") +
+    ggtitle("UMAP10_on_PCA louvain_2")+ theme(aspect.ratio = 1) + options4,
+    DimPlot(Perturbed_set, reduction = "tsne", group.by = "RNA_snn_res.0.5") +
+    ggtitle("tsne louvain_0.5")+ theme(aspect.ratio = 1) + options,
+    DimPlot(Perturbed_set, reduction = "tsne", group.by = "RNA_snn_res.1") +
+    ggtitle("tsne louvain_1")+ theme(aspect.ratio = 1) + options,
+    DimPlot(Perturbed_set, reduction = "tsne", group.by = "RNA_snn_res.2") +
+    ggtitle("tsne louvain_2")+ theme(aspect.ratio = 1) + options4
+    )
+
+ggsave("figures/Perturbed_set.pdf")
+
+```
+
+```{r}
+cowplot::plot_grid(ncol = 2, DimPlot(data.filt, group.by = "orig.ident") + NoAxes(),
+    DimPlot(data.filt, group.by = DF.name) + NoAxes())
+```
+
+
+```{r}
+library(janitor)
+
+cas9cells <- table(paste0(WT_reference@meta.data$RNA_snn_res.0.5, WT_reference@meta.data$dCas9))
+Mkpcas9 <- rbind(cas9cells)
+Mkpcas9 <- as.data.frame(Mkpcas9)
+meta.dataWT <- WT_reference[[]]
+countsdCas9 <- group_by(meta.dataWT, dCas9, RNA_snn_res.0.5) %>% summarise(count = n())
+write.csv(countsdCas9, "tables/Cells_dCas9_PosNeg_perCluster_Sample2.csv")
+
+
+MS2p65cells <- table(paste0(WT_reference@meta.data$RNA_snn_res.0.5, WT_reference@meta.data$MS2p65_hsf1))
+MkpMS2p65 <- rbind(MS2p65cells)
+MkpMS2p65 <- as.data.frame(MkpMS2p65)
+meta.dataWT <- WT_reference[[]]
+countsMS2p65 <- group_by(meta.dataWT, MS2p65_hsf1, RNA_snn_res.0.5) %>% summarise(count = n())
+write.csv(countsMS2p65, "tables/Cells_MS2p65_hsf1_PosNeg_perCluster_Sample2.csv")
+
+ggplot(countsdCas9, aes(RNA_snn_res.0.5, count, fill = dCas9)) +
+geom_bar(position="fill", stat = 'identity')
+ggsave("figures/dCas9Count.pdf")
+
+ggplot(countsMS2p65, aes(RNA_snn_res.0.5, count, fill = MS2p65_hsf1)) +
+geom_bar(position="fill", stat = 'identity')
+ggsave("figures/MS2p65_hsf1Count.pdf")
+
+
+```
+```{r fig.height=12, fig.width=6}
+BloodFeatures <- c("Hba-a1", "Hbb-bt", "Hba-a2", "Hmgb2")
+Endothelium <- c("Kdr", "Lyve1")
+Macrophage <- c("Maf", "C1qa", "C1qb")
+Monocyte <- c("S100a9", "S100a8", "Camp", "Ngp")
+StromalCells <- c("Col1a1", "Col3a1", "Vim")
+
+FeaturePlot(WT_reference, reduction = "UMAP10_on_PCA", dims = 1:2, features = myfeatures,
+        ncol = 2, order = T) & theme(aspect.ratio = 1)
+ggsave("HepatocyteFeatures_WT_reference_UMAP10.pdf")
+```
+```{r fig.height=6, fig.width=6}
+FeaturePlot(WT_reference, reduction = "UMAP10_on_PCA", dims = 1:2, features = BloodFeatures,
+        ncol = 2, order = T) & theme(aspect.ratio = 1)
+ggsave("BloodFeatures_WT_reference_UMAP10.pdf")
+FeaturePlot(WT_reference, reduction = "UMAP10_on_PCA", dims = 1:2, features = Macrophage,
+        ncol = 2, order = T) & theme(aspect.ratio = 1)
+ggsave("Macrophage_WT_reference_UMAP10.pdf")
+FeaturePlot(WT_reference, reduction = "UMAP10_on_PCA", dims = 1:2, features = Monocyte,
+        ncol = 2, order = T) & theme(aspect.ratio = 1)
+ggsave("Monocyte_WT_reference_UMAP10.pdf")
+FeaturePlot(WT_reference, reduction = "UMAP10_on_PCA", dims = 1:2, features = StromalCells,
+        ncol = 2, order = T) & theme(aspect.ratio = 1)
+ggsave("StromalCells_WT_reference_UMAP10.pdf")
+```
+```{r fig.height=3, fig.width=6}
+FeaturePlot(WT_reference, reduction = "UMAP10_on_PCA", dims = 1:2, features = Endothelium,
+        ncol = 2, order = T) & theme(aspect.ratio = 1)
+
+ggsave("Endothelium_WT_reference_UMAP10.pdf")
+```
+```{r}
+save(Perturbed_set, file = "Rdata/Perturbed_set_afterClustering.Rdata")
+save(WT_reference, file = "Rdata/WT_reference_afterClustering.Rdata")
+```
+Perturbed_set@meta.data[["nFeature_Crispr"]]
+
+```{r fig.width=10}
+
+myfeatures <- c("Slc22a30", "Cyp1a2", "Cyp2e1", "Cyp2c29", "Mup7")
+
+FeaturePlot(Perturbed_set, reduction = "UMAP10_on_PCA", dims = 1:2, features = myfeatures, ncol = 3, order = T) & theme(aspect.ratio = 1)
+ggsave("figures/Featuresplot_Hepa_UMAP10_on_PCA.pdf")
+
+```
+```{r fig.width=10}
+myfeatures2 <- c("Dlk1", "Afp", "Gpc3", "Cyp4a14")
+
+FeaturePlot(Perturbed_set, reduction = "UMAP10_on_PCA", dims = 1:2, features = myfeatures2, ncol = 3, order = T) & theme(aspect.ratio = 1)
+ggsave("figures/Featuresplot_Hepa_E155_UMAP10_on_PCA.pdf")
+
+```
+
+```{r}
+FeaturePlot(Perturbed_set, reduction = "UMAP10_on_PCA", dims = 1:2, features = "nFeature_Crispr",
+      ) & theme(aspect.ratio = 1)
+
+ggsave("figures/nFeature_Crispr_Hepa_UMAP10_on_PCA.pdf")
+FeaturePlot(Perturbed_set, reduction = "UMAP10_on_PCA", dims = 1:2, features = "nCount_Crispr",
+      ) & theme(aspect.ratio = 1)
+
+
+ggsave("figures/nCount_Crispr_Hepa_UMAP10_on_PCA.pdf")
+```
+```{r}
+Perturbed_set <- ScaleData(object = Perturbed_set, features = rownames(Perturbed_set))
+```
+
+
+```{r}
+Crisprtargets <- c("2010315B03Rik", "Apobec1", "Atf5", "Atoh8", "Bcl6", "Calcoco1", "Cebpa", "Cebpb", "Chd9", "Chuk", "Crebl2", "Crebrf", "Creg1", "Crem", "Csrp3", "Dbp", "Esr1", "Gadd45g", "Gm14403", "Hdac11", "Hes6", "Hopx", "Hspa1a", "Id3", "Irf5", "Irf6", "Irf7", "Klf9", "Lpin1", "Macrod1", "Mafb", "Mbd1", "Nfix", "Nr0b2", "Nr1d1", "Nr1d2", "Nr1h4", "Nr1i3", "Parp14", "Parp3", "Parp6", "Parp9", "Pdcd4", "Pparg", "Prkaa2", "Prox1", "Rbl2", "Rorc", "Sat1", "Trip4", "Tsc22d3", "Ube2q2", "Xbp1", "Zbtb16", "Zbtb20", "Zfp809", "Zfp874a", "Zfp970", "Zhx2", "Zhx3", "Znfx1")
+```
+```{r fig.width=14}
+DoHeatmap(object = Perturbed_set, features = Crisprtargets, group.by = "RNA_snn_res.2")
+ggsave("crisprTargets_Heatmap.pdf")
+
+```
+```{r fig.width=14}
+DotPlot(object = Perturbed_set, features = Crisprtargets, group.by = "RNA_snn_res.2", cluster.idents = T) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))
+ggsave("crisprTargets_dotplot.pdf")
+```
+
+```{r fig.width=8}
+DotPlot(Perturbed_set, features = Crisprtargets, group.by = "RNA_snn_res.2", cluster.idents = T) +
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  scale_colour_viridis(option="magma") +
+  guides(size=guide_legend(override.aes=list(shape=21, colour="black", fill="white"))) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))
+ggsave("crisprTargets_dotplot_V2.pdf")
+```
+```{r}
+#save(Perturbed_set, file ="Rdata/Perturbed_set_afterClustering_scaling.Rdata")
+load("Rdata/Perturbed_set_afterClustering_scaling.Rdata")
+```
+
+```{r fig.width=8}
+guidesList <- c("2010315B03Rik-1", "2010315B03Rik-4", "Apobec1-1", "Apobec1-2", "Atf5-1", "Atf5-3", "Atoh8-1", "Atoh8-2", "Bcl6-1", "Bcl6-2", "Calcoco1-1", "Calcoco1-4", "Cebpa-1", "Cebpa-2", "Cebpb-1", "Cebpb-3", "Chd9-1", "Chd9-3", "Chuk-1", "Chuk-2", "Crebl2-1", "Crebl2-3", "Crebrf-1", "Crebrf-2", "Creg1-1", "Creg1-4", "Crem-1", "Crem-2", "Csrp3-1", "Csrp3-3", "Dbp-1", "Dbp-2", "Esr1-1", "Esr1-2", "Gadd45g-1", "Gadd45g-2", "Gm14403-1", "Gm14403-2", "Hdac11-1", "Hdac11-2", "Hes6-1", "Hes6-2", "Hopx-1", "Hopx-2", "Hspa1a-1", "Hspa1a-3", "Id3-1", "Id3-2", "Irf5-1", "Irf5-3", "Irf6-1", "Irf6-4", "Irf7-1", "Irf7-5", "Klf9-1", "Klf9-3", "Lpin1-1", "Lpin1-3", "Macrod1-1", "Macrod1-2", "Mafb-1", "Mafb-4", "Mbd1-1", "Mbd1-3", "Nfix-1", "Nfix-2", "Nr0b2-1", "Nr0b2-5", "Nr1d1-1", "Nr1d1-3", "Nr1d2-1", "Nr1d2-3", "Nr1h4-1", "Nr1h4-2", "Nr1i3-1", "Nr1i3-4", "Parp14-1", "Parp14-3", "Parp3-1", "Parp3-2", "Parp6-1", "Parp6-3", "Parp9-1", "Parp9-4", "Pdcd4-1", "Pdcd4-4", "Pparg-1", "Pparg-3", "Prkaa2-1", "Prkaa2-3", "Prox1-1", "Prox1-5", "Rbl2-1", "Rbl2-2", "Rorc-1", "Rorc-2", "Sat1-1", "Sat1-2", "Trip4-1", "Trip4-2", "Tsc22d3-1", "Tsc22d3-2", "Ube2q2-1", "Ube2q2-4", "Xbp1-1", "Xbp1-3", "Zbtb16-2", "Zbtb16-3", "Zbtb20-1", "Zbtb20-5", "Zfp809-1", "Zfp809-4", "Zfp874a-1", "Zfp874a-2", "Zfp970-1", "Zfp970-5", "Zhx2-1", "Zhx2-3", "Zhx3-1", "Zhx3-2", "Znfx1-1", "Znfx1-4", "NEG-CTRL-1", "NEG-CTRL-2")
+
+
+Perturbed_set <- NormalizeData(Perturbed_set, assay = "Crispr", normalization.method = "CLR")
+Perturbed_set <- ScaleData(Perturbed_set, assay = "Crispr")
+```
+```{r fig.width=8}
+
+DotPlot(Perturbed_set, assay = "Crispr", features = guidesList, group.by = "RNA_snn_res.2", cluster.idents = T) +
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  scale_colour_viridis(option="magma") +
+  guides(size=guide_legend(override.aes=list(shape=21, colour="black", fill="white"))) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))
+ggsave("crisprguides_dotplot.pdf")
+```
+
+```{r fig.width=10}
+
+options = guides(color = guide_legend(override.aes = list(size=3), ncol=2) )
+options4 = guides(color = guide_legend(override.aes = list(size=3), ncol=3) )
+# each time you run clustering, the data is stored in meta data columns:
+# seurat_clusters - lastest results only CCA_snn_res.XX - for each different
+# resolution you test.
+
+
+DimPlot(Perturbed_set, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.2", label=TRUE) +
+    ggtitle("UMAP10_on_PCA louvain_2")+ theme(aspect.ratio = 1) + options
+
+
+ggsave("figures/Perturbed_UMAP10_labled.pdf")
+
+```
+
+```{r}
+library(SCpubr)
+library(colortools)
+
+SingleEnrich <- c("15", "18", "31")
+multiple <- c("3", "16", "23", "26") 
+p1 <- SCpubr::do_DimPlot(sample = Perturbed_set, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.2",
+                         idents.keep = SingleEnrich) + theme(aspect.ratio = 1) +  Seurat::NoAxes()
+
+p2<- SCpubr::do_DimPlot(sample = Perturbed_set, reduction = "UMAP10_on_PCA", group.by = "RNA_snn_res.2",
+                         idents.keep = multiple) + theme(aspect.ratio = 1) +  Seurat::NoAxes()
+
+p <- p1 | p2
+p
+
+ggsave("figures/umap10_highlighClausters.pdf")
+```
+```{r}
+SCpubr::do_DimPlot(sample = Perturbed_set, 
+                  reduction = "UMAP10_on_PCA", 
+                  group.by = "RNA_snn_res.2",
+                  label = TRUE,
+                  legend = FALSE
+                         ) + theme(aspect.ratio = 1) +  Seurat::NoAxes()
+
+ggsave("UMAP10_on_PCA_betterlables.pdf")
+```
+
+```{r fig.height=21, fig.width=15}
+p3 <- SCpubr::do_DimPlot(Perturbed_set, reduction = "UMAP10_on_PCA",
+                        split.by = "RNA_snn_res.2", 
+                        ncol = 5, 
+                        legend = F,
+                        fontsize = 24) & theme(aspect.ratio = 1) &  Seurat::NoAxes()
+p3
+ggsave("UMAP10_on_PCA_splitbyRNA_snn_res_2.pdf")
+```
+```{r}
+singleNr1i3 <- c("AACGAAAGTACACTCA-1", "ATCACTTGTCAAGCCC-1", "ATGATCGTCAAGCTTG-1", "ATTCCCGCACTCCACT-1", "CACACAATCGTGCTCT-1", "CATGCCTCAATATCCG-1", "CCACGAGTCGCCAGAC-1", "CCATAAGAGGATTTAG-1", "GATCACATCGCCGATG-1", "GGTCTGGTCTTAAGGC-1", "GTCGCGATCTCGGTCT-1", "GTGGCGTCAGACAAGC-1", "GTTCATTCAATTCACG-1", "TAGAGTCCATACCGTA-1", "TCACGCTTCGGCTGGT-1", "TCAGCCTCAACTGAAA-1", "TCATATCCAAACTAGA-1", "TCCTTTCAGGTAACTA-1", "TCTCACGTCTGGTGGC-1", "TGAGGAGTCACGATAC-1", "TGCAGGCCAGGCGATA-1", "AAGACTCGTCGCCTAG-1", "AGATCGTAGTGAGGTC-1", "AGGTCTACAGCAAGAC-1", "AGTTCCCAGTCGTTAC-1", "CAACGATGTGATATAG-1", "CATCCACTCATCGCTC-1", "CCAAGCGAGTGTACCT-1", "CTAAGTGTCACTTATC-1", "CTGAGGCCACGTAACT-1", "GAAACCTAGTGGTTGG-1", "GCGTGCACAGACCCGT-1", "GGGTATTCATTACTCT-1", "GTATTTCCATGAGTAA-1", "GTTACCCTCGCAGATT-1", "TAACTTCAGACACACG-1", "TCATACTCAAGGTACG-1", "TCCTTTCCACACAGCC-1", "TGCTCGTTCAGATTGC-1", "TTGGGCGCATCGGCCA-1", "TTTCAGTGTAGGTACG-1")
+
+singleNTC <- c("ACTATGGTCTTCCGTG-1", "AGCGATTAGTTGAAAC-1", "CTGTACCCATGGCTGC-1", "GACTCAAAGAAGTATC-1", "ACATTTCGTCACAATC-1", "TCCGGGAGTCGCAGTC-1")
+
+
+Combination <- c("GAGGGTACAGTTGCGC-1", "GACACGCAGGTCGAGT-1")
+```
+
+```{r}
+p <- SCpubr::do_DimPlot(sample = Perturbed_set, reduction = "UMAP10_on_PCA",
+                        cells.highlight = singleNr1i3, 
+                        sizes.highlight = 1) & theme(aspect.ratio = 1) &  Seurat::NoAxes()
+
+p2 <- SCpubr::do_DimPlot(sample = Perturbed_set, reduction = "UMAP10_on_PCA",
+                        cells.highlight = singleNTC, 
+                        sizes.highlight = 1) & theme(aspect.ratio = 1) &  Seurat::NoAxes()
+
+p3 <- SCpubr::do_DimPlot(sample = Perturbed_set, reduction = "UMAP10_on_PCA",
+                        cells.highlight = Combination, 
+                        sizes.highlight = 1) & theme(aspect.ratio = 1) &  Seurat::NoAxes()
+
+p
+ggsave("singleNr1i3.pdf")
+p2
+ggsave("singleNTC.pdf")
+p3
+ggsave("conbination.pdf")
+
+```
+

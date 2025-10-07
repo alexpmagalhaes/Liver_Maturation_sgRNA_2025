@@ -1,0 +1,170 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r message=FALSE, warning=FALSE}
+date()
+setwd("/Users/magalhae/Desktop/Atshuhiro/CutandRUN/Peaks/")
+library(tidyverse)
+library(ChIPQC)
+library(ChIPseeker)
+library(clusterProfiler)
+library(AnnotationDbi)
+library(AnnotationHub)
+library(ensembldb)
+library(Rsamtools)
+library(Signac)
+#library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+#library(TxDb.Mmusculus.UCSC.mm39.knownGene)
+library(ChIPpeakAnno)
+library(BSgenome.Mmusculus.UCSC.mm10)
+```
+
+
+```{r}
+txdb <- TxDb.Mmusculus.UCSC.mm10.knownGene
+annoDataTxDb <- toGRanges(TxDb.Mmusculus.UCSC.mm10.knownGene)
+head(annoDataTxDb, n=2)
+```
+
+```{r}
+#Load data
+samplefiles <- list.files("./", pattern= ".bed", full.names=T)
+
+names(samplefiles) <- basename(gsub(samplefiles, pattern = "_R1.seacr.peaks.stringent.bed", replacement=""))
+```
+
+```{r message=FALSE, warning=FALSE}
+peakAnnoList <- lapply(samplefiles, annotatePeak, TxDb=txdb, 
+                       tssRegion=c(-2000, 1000), verbose=TRUE, annoDb="org.Mm.eg.db")
+```
+```{r}
+plotAnnoBar(peakAnnoList)
+ggsave("Peaks_plotAnnoBar.pdf")
+plotDistToTSS(peakAnnoList, title="Distribution of transcription factor-binding loci \n relative to TSS")
+ggsave("Peaks_plotDistToTSS.pdf")
+```
+
+
+```{r}
+annot_peaks <- lapply(peakAnnoList, as.data.frame)
+```
+
+```{r}
+library(openxlsx)
+# create workbook
+wb <- createWorkbook()
+
+#Iterate the same way as PavoDive, slightly different (creating an anonymous function inside Map())
+Map(function(data, nameofsheet){     
+
+    addWorksheet(wb, nameofsheet)
+    writeData(wb, nameofsheet, data)
+
+}, annot_peaks, names(annot_peaks))
+
+## Save workbook to excel file 
+saveWorkbook(wb, file = "Peak_annotation_MergedPeaks.xlsx", overwrite = TRUE)
+```
+
+```{r}
+
+for (i in seq_len(length(samplefiles))){
+    data <- toGRanges(samplefiles[i])
+    new_name <- paste0(names(samplefiles[i]))
+    
+    # Store object 'data' under the name 'new_name' in the global environment.
+    assign(new_name, data)
+}
+```
+```{r}
+library(Vennerable)
+venn_cnt2venn <- function(venn_cnt){
+ n <- which(colnames(venn_cnt)=="Counts") - 1
+ SetNames=colnames(venn_cnt)[1:n]
+ Weight=venn_cnt[,"Counts"]
+ names(Weight) <- apply(venn_cnt[,1:n], 1, paste, collapse="")
+ Venn(SetNames=SetNames, Weight=Weight)
+ }
+```
+
+```{r}
+overlapping_peaks_Hnf4a <- findOverlapsOfPeaks(Adult_Hnf4a_R1, 
+                                         Adult_Hnf4a_R2,
+                                         connectedPeaks = "keepAll")
+
+
+overlapping_peaks_Nfix <- findOverlapsOfPeaks(Adult_Nfix_R1,
+                                         Adult_Nfix_R2,
+                                         connectedPeaks = "keepAll")
+
+overlapping_peaks_Nr1i3 <- findOverlapsOfPeaks(Adult_Nr1i3_R1,
+                                         Adult_Nr1i3_R2, 
+                                         connectedPeaks = "keepAll")
+
+mean_peak_width_Hnf4a <- mean(width(unlist(GRangesList(overlapping_peaks_Hnf4a[["all.peaks"]]))))
+mean_peak_width_Nfix <- mean(width(unlist(GRangesList(overlapping_peaks_Nfix[["all.peaks"]]))))
+mean_peak_width_Nr1i3 <- mean(width(unlist(GRangesList(overlapping_peaks_Nr1i3[["all.peaks"]]))))
+
+total_binding_sites_Hnf4a <- length(BSgenome.Mmusculus.UCSC.mm10[["chr2"]]) * 0.03 / mean_peak_width_Hnf4a
+total_binding_sites_Nfix <- length(BSgenome.Mmusculus.UCSC.mm10[["chr2"]]) * 0.03 / mean_peak_width_Nfix
+total_binding_sites_Nr1i3 <- length(BSgenome.Mmusculus.UCSC.mm10[["chr2"]]) * 0.03 / mean_peak_width_Nr1i3
+
+```
+```{r fig.height=6, fig.width=6}
+pdf("overlapping_peaks_CutRun_Hnf4a_Venn.pdf")
+venn1_Hnf4a <- makeVennDiagram(overlapping_peaks_Hnf4a, 
+                         totalTest = total_binding_sites_Hnf4a, 
+                         connectedPeaks = "keepAll", 
+                         fill = c("#CC79A7", "#56B4E9"),
+                         col = c("#D55E00", "#0072B2"),
+                         cat.col = c("#D55E00", "#0072B2"),
+                         imagetype = "svg", scaled = TRUE, euler.d = TRUE
+                         )
+dev.off()
+pdf("overlapping_peaks_CutRun_Hnf4a_Euler.pdf")
+v1_Hnf4a <- venn_cnt2venn(venn1_Hnf4a$vennCounts)
+plot(v1_Hnf4a)
+dev.off()
+```
+
+```{r fig.height=6, fig.width=6}
+pdf("overlapping_peaks_CutRun_Nfix_Venn.pdf")
+venn1_Nfix <- makeVennDiagram(overlapping_peaks_Nfix, 
+                         totalTest = total_binding_sites_Nfix, 
+                         connectedPeaks = "keepAll", 
+                         fill = c("#CC79A7", "#56B4E9"),
+                         col = c("#D55E00", "#0072B2"),
+                         cat.col = c("#D55E00", "#0072B2"),
+                         imagetype = "svg", scaled = TRUE, euler.d = TRUE
+                         )
+dev.off()
+pdf("overlapping_peaks_CutRun_Nfix_Euler.pdf")
+v1_Nfix <- venn_cnt2venn(venn1_Nfix$vennCounts)
+plot(v1_Nfix)
+dev.off()
+```
+
+```{r fig.height=6, fig.width=6}
+pdf("overlapping_peaks_CutRun_Nr1i3_Venn.pdf")
+venn1_Nr1i3 <- makeVennDiagram(overlapping_peaks_Nr1i3, 
+                         totalTest = total_binding_sites_Nr1i3, 
+                         connectedPeaks = "keepAll", 
+                         fill = c("#CC79A7", "#56B4E9"),
+                         col = c("#D55E00", "#0072B2"),
+                         cat.col = c("#D55E00", "#0072B2"),
+                         imagetype = "svg", scaled = TRUE, euler.d = TRUE
+                         )
+dev.off()
+pdf("overlapping_peaks_CutRun_Nr1i3_Euler.pdf")
+v1_Nr1i3 <- venn_cnt2venn(venn1_Nr1i3$vennCounts)
+plot(v1_Nr1i3)
+dev.off()
+```
+

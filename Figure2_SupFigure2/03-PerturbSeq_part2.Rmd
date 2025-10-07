@@ -1,0 +1,156 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+You need this parts ::::
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+library(Seurat)
+library(SeuratDisk)
+library(SeuratData)
+library(cowplot)
+library(hdf5r)
+library(kableExtra)
+library(patchwork)
+library(tidyverse)
+library(SeuratWrappers)
+#library(velocyto.R)
+library(parallel)
+library(viridis)
+library(scMAGeCK)
+library(ReductionWrappers)
+library(phateR)
+# work in parallel
+options(mc.cores = detectCores() - 1)
+plan("multicore", workers = 10)
+options(future.globals.maxSize = 28 * 1024 ^ 3)
+set.seed(12345)
+
+```
+
+```{r}
+#Change this to folder of use
+setwd("/Users/magalhae/Desktop/Atshuhiro/Paper/FigureZ/scmageck")
+```
+```{r}
+#load("/Users/magalhae/Desktop/Atshuhiro/Paper/FigureZ/PerturbSeq_22Feb2023.RData")
+rm(list=setdiff(ls(), "PerburbSet"))
+feat_bc_mat=PerburbSet
+
+DefaultAssay(feat_bc_mat) <- "RNA"
+
+feac_crisp = PerburbSet@assays[["Crispr"]]@counts
+feat_ref=read.csv('RNA_757_gRNAs.csv')
+feat_c = CreateSeuratObject(counts = feat_bc_mat@assays[["RNA"]],project='RNA-756_RNA-757')
+```
+```{r}
+feat_c_cellnames <- rownames(feat_c@meta.data)
+bc_frame <- feat_ref %>% filter(feat_ref$cell %in% feat_c_cellnames)
+```
+
+```{r}
+bc_frame=bc_frame[bc_frame$read_count>2,]
+#bc_frame=bc_frame[bc_frame$umi_count>5,]
+```
+```{r}
+write.table(bc_frame,file='TBARCODE_10x',row.names = F,sep='\t',quote=F)
+BARCODE='/Users/magalhae/Desktop/Atshuhiro/Paper/FigureZ/scmageck/BARCODE_10x_RNA-756_RNA-757.txt'
+```
+
+```{r}
+featurePlot(RDS = feat_c, BARCODE=BARCODE, TYPE = "Dis")
+```
+```{r}
+feat_c = pre_processRDS(BARCODE = BARCODE, RDS = feat_c)
+```
+```{r}
+feat_c <- NormalizeData(feat_c, verbose = FALSE)
+feat_c <- FindVariableFeatures(feat_c, selection.method = "vst" , verbose = F, nfeatures = 3000)
+feat_c <- ScaleData(feat_c)
+```
+
+```{r}
+# Identify the 10 most highly variable genes
+top25 <- head(VariableFeatures(feat_c), 25)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(feat_c)
+plot2 <- LabelPoints(plot = plot1, points = top25, repel = TRUE)
+plot2
+```
+```{r}
+feat_c <- RunPCA(feat_c, features = VariableFeatures(object = feat_c))
+feat_c <- FindNeighbors(feat_c, dims = 1:30)
+for (res in c(0.1, 0.25, 0.5, 1, 1.5, 2)) {
+feat_c <- FindClusters(feat_c, graph.name = "RNA_snn", resolution = res, algorithm = 1, future.seed=TRUE)
+}
+```
+```{r}
+feat_c@reductions <- PerburbSet@reductions
+feat_c@graphs <- PerburbSet@graphs
+feat_c@meta.data$RNA_snn_res.1.5 <- PerburbSet@meta.data$RNA_snn_res.1.5
+feat_c@meta.data$RNA_snn_res.2 <- PerburbSet@meta.data$RNA_snn_res.2
+```
+```{r}
+# LR test
+lr_result <- scmageck_lr(BARCODE=BARCODE, RDS=feat_c, LABEL='Sample756_scmageck_lr', SIGNATURE = NULL,
+      NEGCTRL = 'Non-Targeting', PERMUTATION = 1000, SAVEPATH='/Users/magalhae/Desktop/Atshuhiro/Paper/FigureZ/scmageck/', LAMBDA=0.01)
+
+```
+```{r}
+# identify significant sgRNA which affect gene MKI67 by using LR test
+selectPlot(GENE = "Nr1i3", lr_result = lr_result, CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr")
+```
+
+
+```{r}
+lr_score <- lr_result[[1]]
+lr_score_pval <- lr_result[[2]]
+```
+```{r}
+write_csv(lr_score, "lr_score_Sample756.csv")
+write_csv(lr_score_pval, "lr_score_pval_Sample756.csv")
+```
+
+
+##START WHERE!!!!
+
+```{r}
+load("PerturbData_scmageck_05052023.RData")
+```
+
+```{r fig.height=5, fig.width=5}
+# identify significant sgRNA which affect gene MKI67 by using LR test
+
+p1 <- cowplot::plot_grid(ncol = 2, nrow = 2, 
+                         selectPlot(GENE = "Cyp2c29", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp1a2", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp3a11", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Afp", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1)
+)
+p1
+
+#ggsave("lr_results_Cyp2c29_Cyp1a2_Cyp3a11_Afp.pdf")
+```
+
+```{r}
+WT.ref_Mhep <- CellCycleScoring(WT.ref_Mhep, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+WT.ref_Mhep <- SCTransform(WT.ref_Mhep, 
+                      assay = 'RNA',
+                      method = "glmGamPoi",
+                      vst.flavor="v2",
+                      new.assay.name = 'SCT',
+                      variable.features.n = 3000,
+                      vars.to.regress = c("percent_mito", "S.Score", "G2M.Score"))
+```
+
+```{r}
+
+```
+

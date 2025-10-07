@@ -1,0 +1,184 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: inline
+---
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library('tidyverse')
+library('DESeq2')
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(dendextend)
+library(viridis)
+```
+
+```{r}
+DEG_RFC = read_csv(".././DEG_R50_Fc2.csv")
+Allvst = read_csv(".././AllCount-vst.csv")
+```
+```{r}
+longAllvst <- gather(Allvst, "group", "Expression", -ID)  
+
+# create a new column that as the name of the samples without the _
+# and the number of the replicate
+longAllvst = longAllvst %>% separate(group, c("tgroup", NA), sep = "_", remove = F)# %>% unite("tgroup", tgroup:tgroup2, sep= "_")
+```
+
+```{r}
+# this is a pipe. group_by will divide the table into groups,
+# in this case by ID and replicate,
+# summarize will create stats for the groups and we are selecting the mean
+# and spread returns the table to the wide format.
+MeansAllvst  <- longAllvst %>%
+  group_by(ID, tgroup) %>%
+  summarize(expression_mean = mean(Expression)) %>%
+  spread(., tgroup, expression_mean)
+# makes the column named ID as names of the rows
+
+write.csv(MeansAllvst, file= "MeansAllvst.csv")
+
+```
+
+```{r}
+MeansAllvst <- MeansAllvst %>% column_to_rownames("ID")
+MeansAllvstSC <- t(scale(t(MeansAllvst), scale = T, center = T))
+write.csv(MeansAllvstSC, file= "MeansAllvstSC.csv")
+hist(MeansAllvstSC)
+```
+```{r}
+MeansDEGSvstSC <- MeansAllvstSC[which(row.names(MeansAllvstSC) %in% DEG_RFC$ID),]
+hist(MeansDEGSvstSC)
+write.csv(MeansDEGSvstSC, file= "MeansDEGSvstSC.csv")
+```
+
+
+```{r}
+MeansDEGSvstSC = MeansDEGSvstSC %>% as.data.frame()
+col.order <- c("E11xx5", "E15xx5", "P1", "P10", "P30", "Adult")
+MeansDEGSvstSC = MeansDEGSvstSC %>% dplyr::select(col.order)
+MeansDEGSvstSC = MeansDEGSvstSC %>% as.matrix()
+
+write.csv(MeansDEGSvstSC, file= "MeansDEG_RFC_vstSC.csv")
+```
+
+```{r}
+MeansDEGSvstSC = read_csv("MeansDEG_RFC_vstSC.csv") %>% column_to_rownames(var = "GeneName")
+```
+```{r}
+mat = as.matrix(MeansDEGSvstSC[,c(3:8)])
+```
+
+
+
+```{r}
+library(factoextra)
+
+set.seed(123)
+km.res <- kmeans(mat, 4, nstart = 25)
+
+fviz_nbclust(mat, kmeans, method = "wss")
+
+```
+```{r warning=FALSE}
+library(cluster)
+#calculate gap statistic based on number of clusters
+gap_stat <- clusGap(mat,
+                    FUN = kmeans,
+                    nstart = 25,
+                    K.max = 10,
+                    B = 50)
+
+#plot number of clusters vs. gap statistic
+fviz_gap_stat(gap_stat)
+```
+
+```{r fig.height=4, fig.width=2}
+row_dendo = hclust(dist(mat), method = "complete") # row clustering
+# define 5 row (gene) clusters using cutree outside ComplexHeatmap
+mycl.r <- cutree(row_dendo, k=5)
+#kclus <- kmeans(mat, 5)
+#split <- kclus$cluster
+```
+
+```{r}
+Guides_target <- c("2010315B03Rik", "Apobec1", "Atf5", "Atoh8", "Bcl6", "Calcoco1", "Cebpa", "Cebpb", "Chd9", "Chuk", "Crebl2", "Crebrf", "Creg1", "Crem", "Csrp3", "Dbp", "Esr1", "Gadd45g", "Gm14403", "Hdac11", "Hes6", "Hopx", "Hspa1a", "Id3", "Irf5", "Irf6", "Irf7", "Klf9", "Lpin1", "Macrod1", "Mafb", "Mbd1", "Nfix", "Nr0b2", "Nr1d1", "Nr1d2", "Nr1h4", "Nr1i3", "Parp14", "Parp3", "Parp6", "Parp9", "Pdcd4", "Pparg", "Prkaa2", "Prox1", "Rbl2", "Rorc", "Sat1", "Trip4", "Tsc22d3", "Ube2q2", "Xbp1", "Zbtb16", "Zbtb20", "Zfp809", "Zfp874a", "Zfp970", "Zhx2", "Zhx3", "Znfx1")
+```
+
+
+
+
+```{r fig.height=4, fig.width=2}
+h <- Heatmap(mat,
+             name = "z-score", #title of legend
+             #col = colorRampPalette(rev(brewer.pal(n = 7, name ="RdYlBu")))(10),
+             col = colorRampPalette(rev(brewer.pal(n = 9, name ="RdYlBu")))(10),
+             #cluster_rows = color_branches(row_dendo, k = 5),
+             #column_order = order(colnames(mat)),
+             cluster_columns = FALSE,
+             show_row_names = FALSE,
+             split= mycl.r,
+             cluster_row_slices = FALSE,
+             width = unit(6, "cm") , height = unit(12, "cm")
+             )
+h = draw(h)
+```
+```{r}
+r.dend <- row_dend(h)  #If needed, extract row dendrogram
+rcl.list <- row_order(h) #Extract clusters (output is a list)
+lapply(rcl.list, function(x) length(x))
+mat2 = MeansDEGSvstSC
+class(mat2)
+clu_df <- lapply(names(rcl.list), function(i){
+  out <- data.frame(GeneID = rownames(mat2[rcl.list[[i]],]),
+                    Cluster = paste0("cluster", i),
+                    stringsAsFactors = FALSE)
+  return(out)
+  }) %>%  #pipe (forward) the output 'out' to the function rbind to create 'clu_df'
+  do.call(rbind, .)
+
+#clu_df <- clu_df %>% rownames_to_column("Order")
+
+write.csv(clu_df, "MeansDEG_RFC_vstSC_Fullgene_row_test.csv", row.names = T)
+```
+
+```{r}
+index_labels <- clu_df %>% filter(GeneID %in% Guides_target)
+labels <- index_labels$GeneID
+index_labels <- as.numeric(index_labels$Order)
+```
+
+
+```{r}
+Guides_Heatmap <- MeansDEGSvstSC %>% filter(row.names(MeansDEGSvstSC) %in% Guides_target)
+
+Guides_Heatmap <- as.matrix(Guides_Heatmap[,c(3:8)])
+```
+
+```{r}
+row_dendo = hclust(dist(Guides_Heatmap), method = "complete") # row clustering
+```
+
+
+```{r fig.height=4, fig.width=2}
+h2 <- Heatmap(Guides_Heatmap,
+             name = "z-score", #title of legend
+             #col = colorRampPalette(rev(brewer.pal(n = 7, name ="RdYlBu")))(10),
+             col = colorRampPalette(rev(brewer.pal(n = 9, name ="RdYlBu")))(10),
+             cluster_rows = row_dendo,
+             #column_order = order(as.numeric(gsub("column", "", colnames(mat)))),
+             cluster_columns = F,
+             show_row_names = TRUE,
+             cluster_row_slices = FALSE,
+             width = unit(6, "cm") , height = unit(12, "cm")
+             )
+pdf("Heatmap_Guides_bulk_zscore.pdf")
+h2 = draw(h2)
+dev.off()
+```
+
+

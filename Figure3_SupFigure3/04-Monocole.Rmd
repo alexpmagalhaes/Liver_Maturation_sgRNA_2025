@@ -1,0 +1,48 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(slingshot)
+library(BUSpaRse)
+library(monocle3)
+```
+### Monocole
+```{r}
+cds <- as.cell_data_set(WT_ref)
+cds <- cluster_cells(cds, resolution=1e-5)
+```
+```{r}
+p1 <- plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = FALSE) & theme(aspect.ratio = 1)
+p2 <- plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = FALSE) & theme(aspect.ratio = 1)
+wrap_plots(p1, p2)
+```
+
+```{r}
+cds <- learn_graph(cds, use_partition = TRUE, verbose = FALSE)
+```
+```{r}
+plot_cells(cds,
+           color_cells_by = "cluster",
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE) & theme(aspect.ratio = 1)
+```
+```{r}
+cds <- order_cells(cds)
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           group_cells_by = "cluster",
+           label_cell_groups = FALSE,
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE,
+           trajectory_graph_color = "grey60") & theme(aspect.ratio = 1)
+```
+```{r}
+
+```
+

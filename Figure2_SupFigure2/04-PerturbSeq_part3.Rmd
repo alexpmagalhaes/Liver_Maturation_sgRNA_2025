@@ -1,0 +1,110 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(Seurat)
+library(cowplot)
+library(hdf5r)
+library(kableExtra)
+library(patchwork)
+#library(biomaRt)
+library(limma)
+library(topGO)
+#library(org.Hs.eg.db)
+library(sva)
+library(scran)
+library(tidyverse)
+library(DoubletFinder)
+library(gprofiler2)
+library(rliger)
+library(future)
+#library(harmony)
+library(pheatmap)
+library(clustree)
+#library(venn)
+library(enrichR)
+library(rafalib)
+library(scPred)
+library(loomR)
+library(SeuratWrappers)
+#library(velocyto.R)
+library(Nebulosa)
+#library(ggalluvial)
+library(parallel)
+library(viridis)
+library(ReductionWrappers)
+library(UCell)
+library(PrettyCols)
+library(scales)
+library(scCustomize)
+library(SCpubr)
+# work in parallel
+options(mc.cores = 6)
+plan("multicore", workers = 6)
+options(future.globals.maxSize = 28 * 1024 ^ 3)
+set.seed(12345)
+setwd("/Users/magalhae/Desktop/Atshuhiro/Paper/FigureZ/")
+options = guides(color = guide_legend(override.aes = list(size=3), ncol=2))
+```
+```{r}
+s.genes <- c("Mcm5", "Pcna", "Tyms", "Fen1", "Mcm2", "Mcm4", "Rrm1", "Ung", "Gins2", "Mcm6", "Cdca7", "Dtl", "Prim1", "Uhrf1", "Cenpu", "Hells", "Rfc2", "Rpa2", "Nasp", "Rad51ap1", "Gmnn", "Wdr76", "Slbp", "Ccne2", "Ubr7", "Pold3", "Msh2", "Atad2", "Rad51", "Rrm2", "Cdc45", "Cdc6", "Exo1", "Tipin", "Dscc1", "Blm", "Casp8ap2", "Usp1", "Clspn", "Pola1", "Chaf1b", "Brip1", "E2f8")
+
+g2m.genes <- c("Hmgb2", "Cdk1", "Nusap1", "Ube2a", "Birc5", "Tpx2", "Top2a", "Ndc80", "Cks2", "Nuf2", "Cks1b", "Mki67", "Tmpo", "Cenpf", "Tacc3", "Pimreg", "Smc4", "Ccnb2", "Ckap2l", "Ckap2", "Aurkb", "Bub1", "Kif11", "Anp32e", "Tubb4b", "Gtse1", "Kif20b", "Hjurp", "Cdca3", "Jpt1", "Cdc20", "Ttk", "Cdc25c", "Kif2c", "Rangap1", "Ncapd2", "Dlgap5", "Cdca2", "Cdca8", "Ect2", "Kif23", "Hmmr", "Aurka", "Psrc1", "Anln", "Lbr", "Ckap5", "Cenpe", "Ctcf", "Nek2", "G2e3", "Gas2l3", "Cbx5", "Cenpa")
+```
+
+```{r}
+#loadWT
+load("/Users/magalhae/Desktop/Atshuhiro/Paper/FigureX/WT_atlas/Seurat_workflow_WT_19Feb2023.RData")
+
+#load Perturb
+load("/Users/magalhae/Desktop/Atshuhiro/NEW_WORK/Sets_PerburbSet_WT_ref_181112022.RData")
+rm(WT_ref, sds, PerburbSet_t, PerburbSet_Meta, p2, p1, meta_feat, markers_genes)
+
+
+grna_genes <- c("2010315B03Rik", "Apobec1", "Atf5", "Atoh8", "Bcl6", "Calcoco1", "Cebpa", "Cebpb", "Chd9", "Chuk", "Crebl2", "Crebrf", "Creg1", "Crem", "Csrp3", "Dbp", "Esr1", "Gadd45g", "Gm14403", "Hdac11", "Hes6", "Hopx", "Hspa1a", "Id3", "Irf5", "Irf6", "Irf7", "Klf9", "Lpin1", "Macrod1", "Mafb", "Mbd1", "Nfix", "Nr0b2", "Nr1d1", "Nr1d2", "Nr1h4", "Nr1i3", "Parp14", "Parp3", "Parp6", "Parp9", "Pdcd4", "Pparg", "Prkaa2", "Prox1", "Rbl2", "Rorc", "Sat1", "Trip4", "Tsc22d3", "Ube2q2", "Xbp1", "Zbtb16", "Zbtb20", "Zfp809", "Zfp874a", "Zfp970", "Zhx2", "Zhx3", "Znfx1")
+
+
+PerburbSet@meta.data <- PerburbSet@meta.data %>% mutate(Pertub_Clusters = ifelse(type_cell == "NT", "NT", metadata$Pertub_Clusters))
+
+
+PerburbSet <- SetIdent(PerburbSet, value = "Pertub_Clusters")
+```
+
+```{r fig.height=12, fig.width=12}
+# identify significant sgRNA which affect gene MKI67 by using LR test
+
+p1 <- cowplot::plot_grid(ncol = 2, nrow = 3, 
+                         selectPlot(GENE = "Cyp2a5", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp2c37", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp2c55", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp2b10", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot(GENE = "Cyp2c50", lr_result = lr_result, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1)
+)
+p1
+```
+
+
+```{r fig.height=5, fig.width=5}
+p2 <- cowplot::plot_grid(ncol = 2, nrow = 3, 
+                         selectPlot2(GENE = "Igf2", lr_result = lr_result_test, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "H19", lr_result = lr_result_test, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1),
+                         selectPlot2(GENE = "Bex2", lr_result = lr_result_test, 
+                                    CUTOFF = 0.05, ADJ = "fdr", TYPE = "lr") & theme(text = element_text(size = 6), aspect.ratio = 1)
+)
+p2
+
+ggsave("P2lr_results_Ig2_H19_Bex2.pdf")
+```

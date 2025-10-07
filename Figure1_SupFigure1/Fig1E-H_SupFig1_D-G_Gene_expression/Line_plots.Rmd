@@ -1,0 +1,155 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library('tidyverse')
+library('DESeq2')
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(dendextend)
+library(viridis)
+```
+
+```{r}
+DEG_RFC = read_csv(".././DEG_R50_Fc2.csv")
+Allvst = read_csv(".././AllCount-vst.csv")
+```
+```{r}
+longAllvst <- gather(Allvst, "group", "Expression", -ID)  
+
+# create a new column that as the name of the samples without the _
+# and the number of the replicate
+longAllvst = longAllvst %>% separate(group, c("tgroup", NA), sep = "_", remove = F)# %>% unite("tgroup", tgroup:tgroup2, sep= "_")
+```
+
+```{r}
+# this is a pipe. group_by will divide the table into groups,
+# in this case by ID and replicate,
+# summarize will create stats for the groups and we are selecting the mean
+# and spread returns the table to the wide format.
+MeansAllvst  <- longAllvst %>%
+  group_by(ID, tgroup) %>%
+  summarize(expression_mean = mean(Expression)) %>%
+  spread(., tgroup, expression_mean)
+# makes the column named ID as names of the rows
+
+write.csv(MeansAllvst, file= "MeansAllvst.csv")
+
+```
+
+```{r}
+MeansAllvst <- MeansAllvst %>% column_to_rownames("ID")
+MeansAllvstSC <- t(scale(t(MeansAllvst), scale = T, center = T))
+write.csv(MeansAllvstSC, file= "MeansAllvstSC.csv")
+hist(MeansAllvstSC)
+```
+```{r}
+MeansDEGSvstSC <- MeansAllvstSC[which(row.names(MeansAllvstSC) %in% DEG_RFC$ID),]
+hist(MeansDEGSvstSC)
+write.csv(MeansDEGSvstSC, file= "MeansDEGSvstSC.csv")
+```
+
+
+```{r}
+MeansDEGSvstSC = MeansDEGSvstSC %>% as.data.frame()
+col.order <- c("E11xx5", "E15xx5", "P1", "P10", "P30", "Adult")
+MeansDEGSvstSC = MeansDEGSvstSC %>% dplyr::select(col.order)
+MeansDEGSvstSC = MeansDEGSvstSC %>% as.matrix()
+
+write.csv(MeansDEGSvstSC, file= "MeansDEG_RFC_vstSC.csv")
+```
+
+```{r}
+MeansDEGSvstSC = read_csv("MeansDEG_RFC_vstSC.csv") %>% column_to_rownames(var = "GeneName")
+```
+```{r}
+mat = as.matrix(MeansDEGSvstSC[,c(3:8)])
+```
+
+```{r}
+library(org.Mm.eg.db)
+library(tidyverse)
+
+df <- read_csv("/AllCount-vst_sc.csv")
+annots <- select(org.Mm.eg.db, keys=df$GeneID, columns="SYMBOL", keytype="ENSEMBL")
+
+lookup <- c(ENSEMBL = "GeneID", SYMBOL = "GeneName")
+annots <- rename(annots, all_of(lookup))
+long_df <- df %>% pivot_longer(!GeneID, names_to = "Sample_S", values_to = "Expression")
+
+long_df <- long_df %>% left_join(annots, by = "GeneID")
+
+long_df <-long_df %>% separate(Sample_S, c("Sample", "Rep"), remove = F, sep = "_")
+
+long_df <- long_df %>% drop_na()
+
+df_means <- long_df %>% group_by(Sample, GeneName) %>% summarise(meanExpression=mean(Expression))
+
+long_df_M  <- read_csv("/Heatmap/MeansAllvstSC.csv") %>% pivot_longer(!GeneID, names_to = "Sample", values_to = "Expression") %>% left_join(annots, by = "GeneID")
+```
+
+```{r}
+col.order <- c("E11xx5", "E15xx5", "P1", "P10", "P30", "Adult")
+p1 <- df_means %>% filter(GeneName %in% c("Gata6", "Foxa2", "Prox1", "Tbx3", "Onecut2")) %>% 
+ggplot(aes(x = factor(Sample, levels = col.order), y = meanExpression, group = GeneName, fill = GeneName, colour = GeneName )) +
+  geom_point(aes(x = factor(Sample, levels = col.order), y = meanExpression, fill = GeneName, colour = GeneName),  inherit.aes = F)+
+  geom_line()+
+  #geom_line(aes(x = factor(Sample, levels = col.order), y = Expression, group = GeneName, fill = GeneName, colour = GeneName ),  inherit.aes = F)+
+  # geom_point() +
+  ylim(-1,4)+ 
+  theme_bw() + scale_fill_brewer(palette="Spectral") + scale_colour_brewer(palette="Spectral") + theme(aspect.ratio = 1/2) + theme(legend.position="top")
+```
+
+```{r}
+p2 <- df_means %>% filter(GeneName %in% c("Sall4", "Klf2", "Klf7", "Foxm1", "Tead2")) %>% 
+ggplot(aes(x = factor(Sample, levels = col.order), y = meanExpression, group = GeneName, fill = GeneName, colour = GeneName )) +
+  geom_point(aes(x = factor(Sample, levels = col.order), y = meanExpression, fill = GeneName, colour = GeneName),  inherit.aes = F)+
+  geom_line()+
+  #geom_line(aes(x = factor(Sample, levels = col.order), y = Expression, group = GeneName, fill = GeneName, colour = GeneName ),  inherit.aes = F)+
+  # geom_point() +
+  ylim(-1,4)+
+  theme_bw() + scale_fill_brewer(palette="Spectral") + scale_colour_brewer(palette="Spectral") + theme(aspect.ratio = 1/2) + theme(legend.position="top")
+```
+
+```{r}
+p3 <- df_means %>% filter(GeneName %in% c("Nr1i3", "Nfix", "Klf9", "Mafb", "Nr1d1")) %>% 
+ggplot(aes(x = factor(Sample, levels = col.order), y = meanExpression, group = GeneName, fill = GeneName, colour = GeneName )) +
+  geom_point(aes(x = factor(Sample, levels = col.order), y = meanExpression, fill = GeneName, colour = GeneName),  inherit.aes = F)+
+  geom_line()+
+  #geom_line(aes(x = factor(Sample, levels = col.order), y = Expression, group = GeneName, fill = GeneName, colour = GeneName ),  inherit.aes = F)+
+  # geom_point() +
+  ylim(-1,4)+
+  theme_bw() + scale_fill_brewer(palette="Spectral") + scale_colour_brewer(palette="Spectral") + theme(aspect.ratio = 1/2) + theme(legend.position="top")
+```
+```{r fig.width=10}
+grid.arrange(p1, p2, p3, ncol=3)
+ggsave("GenePlots_TFs_Bulk.pdf", arrangeGrob(p1, p2, p3, ncol=3))
+```
+
+
+```{r}
+new_list <- c("Cyp2c50", "Cyp2a4", "Ugt1a1" ,"Arg1", "Otc", "Ass1", "Asl", "Cps1", "Abcb11", "Abcc2", "Slc10a1")
+```
+
+```{r}
+df_means <- read_csv("/GSVA/MeansDEG_RFC_vstSC_long.csv")
+```
+
+```{r}
+col.order <- c("E11xx5", "E15xx5", "P1", "P10", "P30", "Adult")
+p3 <- df_means %>% filter(GeneName %in% new_list) %>%
+ggplot(aes(x = factor(Sample, levels = col.order), y = Expression, group = GeneName, fill = GeneName, colour = GeneName )) +
+  geom_point(aes(x = factor(Sample, levels = col.order), y = Expression, fill = GeneName, colour = GeneName),  inherit.aes = F)+
+  geom_line()+
+  #geom_line(aes(x = factor(Sample, levels = col.order), y = Expression, group = GeneName, fill = GeneName, colour = GeneName ),  inherit.aes = F)+
+  # geom_point() +
+  ylim(-2,2)+
+  theme_bw() + scale_fill_brewer(palette="Spectral") + scale_colour_brewer(palette="Spectral") + theme(aspect.ratio = 1/2) + theme(legend.position="top")
+p3
+```
